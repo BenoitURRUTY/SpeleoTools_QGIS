@@ -1,0 +1,935 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ui version="4.0">
+ <class>SpeleoToolsDialog</class>
+ <widget class="QDialog" name="SpeleoToolsDialog">
+  <property name="geometry">
+   <rect><x>0</x><y>0</y><width>520</width><height>640</height></rect>
+  </property>
+  <property name="windowTitle"><string>SpeleoTools</string></property>
+  <property name="toolTip"><string>Plugin QGIS pour la spéléologie</string></property>
+  <layout class="QVBoxLayout" name="mainVLayout" >
+   <property name="spacing"><number>4</number></property>
+   <item>
+    <widget class="QTabWidget" name="tabWidget">
+     <property name="currentIndex"><number>0</number></property>
+     <property name="tabPosition"><enum>QTabWidget::North</enum></property>
+     <widget class="QWidget" name="tabThickness">
+      <attribute name="title"><string>🗻 Épaisseur roche</string></attribute>
+      <layout class="QVBoxLayout" name="vThickness">
+       <property name="spacing"><number>6</number></property>
+       <item>
+        <widget class="QLabel" name="lblThicknessInfo">
+         <property name="text"><string>&lt;b&gt;Calcul de l'épaisseur de roche&lt;/b&gt; — Différence d'altitude entre la surface (MNT) et la couche de cavité ou cheminement topographique. Les deux couches doivent être dans le même CRS (même EPSG).</string></property>
+         <property name="wordWrap"><bool>true</bool></property>
+         <property name="styleSheet"><string>QLabel { background:#e8f4fd; border:1px solid #aad4f0; border-radius:4px; padding:6px; color:#1a4a6b; }</string></property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QGroupBox" name="grpThicknessData">
+         <property name="title"><string>Données d'entrée</string></property>
+         <layout class="QFormLayout" name="fThicknessData">
+          <property name="labelAlignment"><set>Qt::AlignRight</set></property>
+
+          <item row="0" column="0">
+           <widget class="QLabel" name="lblDEM">
+            <property name="text"><string>MNT (surface topographique)</string></property>
+            <property name="toolTip"><string>Modèle Numérique de Terrain représentant la surface du sol. Doit être en format raster (GeoTIFF ou similaire).</string></property>
+           </widget>
+          </item>
+          <item row="0" column="1">
+           <widget class="QComboBox" name="comboDEM">
+            <property name="toolTip"><string>Sélectionnez le raster MNT chargé dans QGIS.</string></property>
+           </widget>
+          </item>
+
+          <item row="1" column="0">
+           <widget class="QLabel" name="lblCave">
+            <property name="text"><string>Couche cavité / cheminement</string></property>
+            <property name="toolTip"><string>Couche vectorielle (points, lignes ou polygones) représentant la topographie souterraine. L'altitude Z est extraite ou comparée au MNT.</string></property>
+           </widget>
+          </item>
+          <item row="1" column="1">
+           <widget class="QComboBox" name="comboCave">
+            <property name="toolTip"><string>Sélectionnez la couche vectorielle de la cavité.</string></property>
+           </widget>
+          </item>
+
+          <item row="2" column="0">
+           <widget class="QLabel" name="lblLayerName">
+            <property name="text"><string>Nom de la couche résultat</string></property>
+            <property name="toolTip"><string>Nom donné à la couche de sortie dans QGIS. Laissez vide pour un nom automatique.</string></property>
+           </widget>
+          </item>
+          <item row="2" column="1">
+           <widget class="QLineEdit" name="LayerName">
+            <property name="placeholderText"><string>ex. épaisseur_grotte_trou</string></property>
+            <property name="toolTip"><string>Nom de la couche résultat dans le panneau des couches QGIS.</string></property>
+           </widget>
+          </item>
+         </layout>
+        </widget>
+       </item>
+       <item>
+        <widget class="QGroupBox" name="grpThicknessOut">
+         <property name="title"><string>Fichier de sortie</string></property>
+         <layout class="QHBoxLayout" name="hThicknessOut">
+          <item>
+           <widget class="QLineEdit" name="lineOutput">
+            <property name="placeholderText"><string>Chemin vers le fichier GeoPackage (.gpkg) de sortie…</string></property>
+            <property name="toolTip"><string>Chemin complet du fichier GeoPackage (.gpkg) où sera enregistré le résultat. Laisser vide pour une couche mémoire temporaire.</string></property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QPushButton" name="btnBrowse">
+            <property name="text"><string>📂 Parcourir</string></property>
+            <property name="toolTip"><string>Choisir l'emplacement du fichier de sortie.</string></property>
+           </widget>
+          </item>
+         </layout>
+        </widget>
+       </item>
+       <item>
+        <widget class="QPushButton" name="btnRunThickness">
+         <property name="text"><string>▶  Calculer l'épaisseur de roche</string></property>
+         <property name="toolTip"><string>Lance le calcul : pour chaque point/segment de la cavité, soustrait l'altitude Z de la cavité à l'altitude du MNT au même emplacement.</string></property>
+         <property name="styleSheet"><string>QPushButton { background-color:#2196F3; color:white; padding:6px; border-radius:4px; font-weight:bold; } QPushButton:hover { background-color:#1976D2; }</string></property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QProgressBar" name="progressThickness">
+         <property name="minimum"><number>0</number></property>
+         <property name="maximum"><number>100</number></property>
+         <property name="toolTip"><string>Progression du calcul d'épaisseur.</string></property>
+        </widget>
+       </item>
+       <item><spacer><property name="orientation"><enum>Qt::Vertical</enum></property><property name="sizeHint" stdset="0"><size><width>0</width><height>20</height></size></property></spacer></item>
+      </layout>
+     </widget>
+     <widget class="QWidget" name="tabProspect">
+      <attribute name="title"><string>🌄 Traitement MNT</string></attribute>
+      <layout class="QVBoxLayout" name="vProspect">
+       <property name="spacing"><number>5</number></property>
+
+       <item>
+        <widget class="QLabel" name="lblProspectInfo">
+         <property name="text"><string>&lt;b&gt;Analyses visuelles du MNT via RVT_py&lt;/b&gt; — Cochez les produits souhaités, ajustez les paramètres avancés et lancez l'analyse. Les résultats sont sauvegardés en GeoTIFF et/ou ajoutés au projet.</string></property>
+         <property name="wordWrap"><bool>true</bool></property>
+         <property name="styleSheet"><string>QLabel { background:#e8f4fd; border:1px solid #aad4f0; border-radius:4px; padding:6px; color:#1a4a6b; }</string></property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QGroupBox" name="grpProspectIn">
+         <property name="title"><string>Entrée / Sortie</string></property>
+         <layout class="QFormLayout" name="fProspectIn">
+          <property name="labelAlignment"><set>Qt::AlignRight</set></property>
+          <item row="0" column="0">
+           <widget class="QLabel" name="lbl_auto_1">
+            <property name="text"><string>MNT</string></property>
+            <property name="toolTip"><string>Raster d'élévation source (GeoTIFF, ASC…).</string></property>
+           </widget>
+          </item>
+          <item row="0" column="1">
+           <widget class="QComboBox" name="comboProspectDEM">
+            <property name="toolTip"><string>Sélectionnez le MNT à analyser.</string></property>
+           </widget>
+          </item>
+          <item row="1" column="0">
+           <widget class="QLabel" name="lbl_auto_2">
+            <property name="text"><string>Dossier de sortie</string></property>
+            <property name="toolTip"><string>Répertoire où seront écrits les GeoTIFFs résultats. Laisser vide = dossier temporaire système.</string></property>
+           </widget>
+          </item>
+          <item row="1" column="1">
+           <layout class="QHBoxLayout">
+            <item>
+             <widget class="QLineEdit" name="editOutputDir">
+              <property name="placeholderText"><string>Laisser vide → dossier temporaire</string></property>
+              <property name="toolTip"><string>Chemin du dossier de sortie. Laisser vide pour utiliser un dossier temporaire.</string></property>
+             </widget>
+            </item>
+            <item>
+             <widget class="QPushButton" name="btnBrowseOutput">
+              <property name="text"><string>📂</string></property>
+              <property name="maximumWidth"><number>32</number></property>
+              <property name="toolTip"><string>Parcourir pour choisir le dossier de sortie.</string></property>
+             </widget>
+            </item>
+           </layout>
+          </item>
+          <item row="2" column="0">
+           <widget class="QLabel" name="lbl_auto_3">
+            <property name="text"><string>Facteur Z (ve_factor)</string></property>
+            <property name="toolTip"><string>Facteur d'exagération verticale. Utilisez 1 pour un terrain réel. Augmentez (ex. 2-5) pour exagérer les reliefs faibles (zones planes). Diminuez pour des terrains très escarpés.</string></property>
+           </widget>
+          </item>
+          <item row="2" column="1">
+           <widget class="QDoubleSpinBox" name="spinZFactor">
+            <property name="minimum"><double>0.010000000000000</double></property>
+            <property name="maximum"><double>1000.000000000000000</double></property>
+            <property name="singleStep"><double>0.100000000000000</double></property>
+            <property name="value"><double>1.000000000000000</double></property>
+            <property name="toolTip"><string>1.0 = pas d'exagération. Valeurs > 1 amplifient les reliefs. Utile pour les zones à faible relief (plaines, grottes à faible dénivelé).</string></property>
+           </widget>
+          </item>
+          <item row="3" column="0" colspan="2">
+           <widget class="QCheckBox" name="AddlayerMNT">
+            <property name="text"><string>Ajouter les couches résultat au projet QGIS</string></property>
+            <property name="checked"><bool>true</bool></property>
+            <property name="toolTip"><string>Si coché, chaque raster produit est automatiquement chargé dans le panneau des couches QGIS.</string></property>
+           </widget>
+          </item>
+         </layout>
+        </widget>
+       </item>
+       <item>
+        <widget class="QGroupBox" name="grpProspectProducts">
+         <property name="title"><string>Produits à calculer</string></property>
+         <layout class="QGridLayout" name="gridProducts">
+          <item row="0" column="0">
+           <widget class="QCheckBox" name="chkHillshade">
+            <property name="text"><string>☀ Ombrage (Hillshade)</string></property>
+            <property name="toolTip"><string>Ombrage classique simulant l'éclairage solaire depuis une direction donnée. Fait ressortir les reliefs orientés vers la lumière et les zones d'ombre.</string></property>
+           </widget>
+          </item>
+          <item row="0" column="1">
+           <layout class="QHBoxLayout">
+            <item>
+             <widget class="QLabel" name="lbl_auto_4"><property name="text"><string>Azimut° :</string></property><property name="toolTip"><string>Direction du soleil en degrés (0=Nord, 90=Est, 180=Sud, 270=Ouest). 315° (NO) est la convention cartographique standard.</string></property></widget>
+            </item>
+            <item>
+             <widget class="QSpinBox" name="spinHsAzimuth">
+              <property name="minimum"><number>0</number></property>
+              <property name="maximum"><number>360</number></property>
+              <property name="value"><number>315</number></property>
+              <property name="toolTip"><string>Direction du soleil (azimut) en degrés dans le sens horaire depuis le Nord. 315° = Nord-Ouest (convention standard).</string></property>
+             </widget>
+            </item>
+            <item>
+             <widget class="QLabel" name="lbl_auto_5"><property name="text"><string>Élév° :</string></property><property name="toolTip"><string>Angle d'élévation du soleil au-dessus de l'horizon (0=horizon, 90=zénith). 35° donne de bonnes ombres sans trop d'aplats.</string></property></widget>
+            </item>
+            <item>
+             <widget class="QSpinBox" name="spinHsElevation">
+              <property name="minimum"><number>1</number></property>
+              <property name="maximum"><number>90</number></property>
+              <property name="value"><number>35</number></property>
+              <property name="toolTip"><string>Angle d'élévation solaire en degrés. Faible (15-25°) = ombres longues, reliefs forts. Élevé (45-60°) = ombres courtes, vue aérienne.</string></property>
+             </widget>
+            </item>
+           </layout>
+          </item>
+          <item row="1" column="0">
+           <widget class="QCheckBox" name="chkMultiHillshade">
+            <property name="text"><string>🌐 Hillshade multidirectionnel</string></property>
+            <property name="toolTip"><string>Combine plusieurs ombrages depuis différentes directions azimutales. Réduit les biais directionnels et révèle mieux les structures quelle que soit leur orientation (failles, couloirs karstiques…).</string></property>
+           </widget>
+          </item>
+          <item row="1" column="1">
+           <layout class="QHBoxLayout">
+            <item>
+             <widget class="QLabel" name="lbl_auto_6"><property name="text"><string>Nb directions :</string></property><property name="toolTip"><string>Nombre de directions d'éclairage réparties uniformément sur 360°. Plus le nombre est élevé, plus la visualisation est uniforme (mais plus lente).</string></property></widget>
+            </item>
+            <item>
+             <widget class="QSpinBox" name="spinMhsDirections">
+              <property name="minimum"><number>4</number></property>
+              <property name="maximum"><number>64</number></property>
+              <property name="singleStep"><number>4</number></property>
+              <property name="value"><number>16</number></property>
+              <property name="toolTip"><string>Nombre de directions d'éclairage (minimum 4, idéalement 16 ou 32). 16 directions est un bon compromis précision/vitesse.</string></property>
+             </widget>
+            </item>
+            <item>
+             <widget class="QLabel" name="lbl_auto_7"><property name="text"><string>Élév° :</string></property></widget>
+            </item>
+            <item>
+             <widget class="QSpinBox" name="spinMhsElevation">
+              <property name="minimum"><number>1</number></property>
+              <property name="maximum"><number>90</number></property>
+              <property name="value"><number>35</number></property>
+              <property name="toolTip"><string>Angle d'élévation solaire commun à toutes les directions (en degrés).</string></property>
+             </widget>
+            </item>
+           </layout>
+          </item>
+          <item row="2" column="0">
+           <widget class="QCheckBox" name="chkSlope">
+            <property name="text"><string>📐 Pente (Slope)</string></property>
+            <property name="toolTip"><string>Calcule l'inclinaison de la pente en degrés ou en pourcentage. Utile pour identifier les versants raides, les bords de dolines, les ruptures de pente liées aux entrées de cavités.</string></property>
+           </widget>
+          </item>
+          <item row="2" column="1">
+           <layout class="QHBoxLayout">
+            <item>
+             <widget class="QLabel" name="lbl_auto_8"><property name="text"><string>Unités :</string></property></widget>
+            </item>
+            <item>
+             <widget class="QComboBox" name="comboSlopeUnit">
+              <item><property name="text"><string>degree</string></property></item>
+              <item><property name="text"><string>percent</string></property></item>
+              <item><property name="text"><string>radian</string></property></item>
+              <property name="toolTip"><string>Unité de la pente en sortie : degree (0-90°), percent (%), radian.</string></property>
+             </widget>
+            </item>
+           </layout>
+          </item>
+          <item row="3" column="0">
+           <widget class="QCheckBox" name="chkSVF">
+            <property name="text"><string>🌌 Facteur de vue du ciel (SVF)</string></property>
+            <property name="toolTip"><string>Sky-View Factor : proportion de ciel visible depuis chaque point (0=complètement obstrué, 1=ciel ouvert). Excellente méthode pour détecter des dépressions, des fossés, des entrées de grottes et des microformes.</string></property>
+           </widget>
+          </item>
+          <item row="3" column="1">
+           <layout class="QHBoxLayout">
+            <item>
+             <widget class="QLabel" name="lbl_auto_9"><property name="text"><string>Rayon max (px) :</string></property><property name="toolTip"><string>Rayon de recherche maximal en pixels. Un rayon plus grand détecte de plus grands reliefs mais est plus lent. Typiquement 10-20 px pour les LiDAR haute résolution.</string></property></widget>
+            </item>
+            <item>
+             <widget class="QSpinBox" name="spinSvfRadius">
+              <property name="minimum"><number>2</number></property>
+              <property name="maximum"><number>100</number></property>
+              <property name="value"><number>10</number></property>
+              <property name="toolTip"><string>Rayon de recherche en pixels (pas en mètres). Multiplier par la résolution du MNT pour obtenir la distance réelle. Ex. 10 px × 1 m/px = 10 m.</string></property>
+             </widget>
+            </item>
+            <item>
+             <widget class="QLabel" name="lbl_auto_10"><property name="text"><string>Nb dir. :</string></property></widget>
+            </item>
+            <item>
+             <widget class="QSpinBox" name="spinSvfDirs">
+              <property name="minimum"><number>4</number></property>
+              <property name="maximum"><number>64</number></property>
+              <property name="singleStep"><number>4</number></property>
+              <property name="value"><number>16</number></property>
+              <property name="toolTip"><string>Nombre de directions de recherche d'horizon (4 à 64). 16 directions est le compromis standard entre vitesse et précision.</string></property>
+             </widget>
+            </item>
+           </layout>
+          </item>
+          <item row="4" column="0">
+           <widget class="QCheckBox" name="chkOpenness">
+            <property name="text"><string>🔭 Ouverture (Openness +/−)</string></property>
+            <property name="toolTip"><string>Ouverture positive : angle moyen vers l'horizon — élevé sur les crêtes. Ouverture négative : inverse — élevé dans les dépressions (dolines, pertes). Très efficace en karst.</string></property>
+           </widget>
+          </item>
+          <item row="4" column="1">
+           <layout class="QHBoxLayout">
+            <item>
+             <widget class="QCheckBox" name="chkOpennessNeg">
+              <property name="text"><string>Ouverture négative aussi</string></property>
+              <property name="toolTip"><string>Calcule en plus l'ouverture négative (DEM inversé). Met en évidence les creux : dolines, pertes, avens, couloirs.</string></property>
+             </widget>
+            </item>
+           </layout>
+          </item>
+          <item row="5" column="0">
+           <widget class="QCheckBox" name="chkSLRM">
+            <property name="text"><string>📊 Relief local simplifié (SLRM)</string></property>
+            <property name="toolTip"><string>Simple Local Relief Model : différence entre le MNT et une version lissée. Fait ressortir les petites formes (buttes, fossés, entrées de grottes) en supprimant les grandes tendances du relief.</string></property>
+           </widget>
+          </item>
+          <item row="5" column="1">
+           <layout class="QHBoxLayout">
+            <item>
+             <widget class="QLabel" name="lbl_auto_11"><property name="text"><string>Rayon lissage (px) :</string></property><property name="toolTip"><string>Rayon du filtre de lissage en pixels. Un rayon plus grand supprime des structures plus larges. Typiquement 10-30 px pour les LiDAR 1 m.</string></property></widget>
+            </item>
+            <item>
+             <widget class="QSpinBox" name="spinSlrmRadius">
+              <property name="minimum"><number>2</number></property>
+              <property name="maximum"><number>200</number></property>
+              <property name="value"><number>20</number></property>
+              <property name="toolTip"><string>Rayon (en pixels) du filtre de tendance local. Plus grand = on supprime des formes plus larges. Ajustez selon la résolution et l'échelle des objets d'intérêt.</string></property>
+             </widget>
+            </item>
+           </layout>
+          </item>
+          <item row="6" column="0">
+           <widget class="QCheckBox" name="chkVAT">
+            <property name="text"><string>🏛 VAT (Archéo-Topographie)</string></property>
+            <property name="toolTip"><string>Visualisation for Archaeological Topography : combinaison pondérée SVF + hillshade + pente. Conçue pour détecter des micro-structures archéologiques mais excellente aussi pour les karsts et les topographies souterraines.</string></property>
+           </widget>
+          </item>
+          <item row="6" column="1">
+           <layout class="QHBoxLayout">
+            <item>
+             <widget name="lblVATWindow" class="QLabel"><property name="text"><string>Fenêtre VAT :</string></property><property name="toolTip"><string>Taille de la fenêtre de lissage interne du VAT (pixels impairs). Influence le niveau de détail conservé dans la visualisation combinée.</string></property></widget>
+            </item>
+            <item>
+             <widget class="QSpinBox" name="spinVATWindow">
+              <property name="minimum"><number>3</number></property>
+              <property name="maximum"><number>99</number></property>
+              <property name="singleStep"><number>2</number></property>
+              <property name="value"><number>5</number></property>
+              <property name="toolTip"><string>Taille de la fenêtre en pixels (doit être impair). Une valeur plus grande lisse davantage la visualisation combinée. Recommandé : 3-7 pour LiDAR haute résolution.</string></property>
+             </widget>
+            </item>
+           </layout>
+          </item>
+          <item row="7" column="0">
+           <widget class="QLabel" name="lbl_auto_12">
+            <property name="text"><string>Azimuts hillshade custom</string></property>
+            <property name="toolTip"><string>Azimuts supplémentaires pour lesquels calculer un ombrage individuel. Utile pour détecter des structures orientées spécifiquement (failles orientées N-S, galeries…).</string></property>
+           </widget>
+          </item>
+          <item row="7" column="1">
+           <widget class="QLineEdit" name="editAzimuths">
+            <property name="placeholderText"><string>ex. 0,45,90,135 (vide = ignorer)</string></property>
+            <property name="toolTip"><string>Liste d'azimuts séparés par des virgules (0-360°). Un ombrage individuel sera calculé pour chaque azimut. Laissez vide pour ignorer cette option.</string></property>
+           </widget>
+          </item>
+
+         </layout>
+        </widget>
+       </item>
+       <item>
+        <widget class="QPushButton" name="btnRunProspect">
+         <property name="text"><string>▶  Lancer l'analyse MNT</string></property>
+         <property name="toolTip"><string>Lance le calcul de tous les produits cochés ci-dessus sur le MNT sélectionné.</string></property>
+         <property name="styleSheet"><string>QPushButton { background-color:#4CAF50; color:white; padding:6px; border-radius:4px; font-weight:bold; } QPushButton:hover { background-color:#388E3C; }</string></property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QProgressBar" name="progressProspect">
+         <property name="minimum"><number>0</number></property>
+         <property name="maximum"><number>100</number></property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QTextEdit" name="textLog">
+         <property name="maximumHeight"><number>110</number></property>
+         <property name="readOnly"><bool>true</bool></property>
+         <property name="placeholderText"><string>Messages et résultats du traitement…</string></property>
+         <property name="styleSheet"><string>QTextEdit { background:#1e1e1e; color:#d4d4d4; font-family:monospace; font-size:10px; border-radius:3px; }</string></property>
+        </widget>
+       </item>
+      </layout>
+     </widget>
+     <widget class="QWidget" name="tabProfile">
+      <attribute name="title"><string>📈 Profils 3D</string></attribute>
+      <layout class="QVBoxLayout" name="vProfile">
+       <property name="spacing"><number>6</number></property>
+
+       <item>
+        <widget class="QLabel" name="lblProfileInfo">
+         <property name="text"><string>&lt;b&gt;Profil développé&lt;/b&gt; — Génère un profil altimétrique le long d'une ligne (cheminement topographique) en échantillonnant le MNT. Exporte en CSV (et PNG si matplotlib est installé).</string></property>
+         <property name="wordWrap"><bool>true</bool></property>
+         <property name="styleSheet"><string>QLabel { background:#e8f4fd; border:1px solid #aad4f0; border-radius:4px; padding:6px; color:#1a4a6b; }</string></property>
+        </widget>
+       </item>
+
+       <item>
+        <widget class="QGroupBox" name="grpProfileData">
+         <property name="title"><string>Paramètres</string></property>
+         <layout class="QFormLayout" name="fProfile">
+          <property name="labelAlignment"><set>Qt::AlignRight</set></property>
+
+          <item row="0" column="0">
+           <widget class="QLabel" name="lbl_auto_13"><property name="text"><string>Couche cheminement</string></property>
+            <property name="toolTip"><string>Couche vectorielle (lignes) représentant le tracé du profil à générer (ex. polygone de cheminement topographique).</string></property></widget>
+          </item>
+          <item row="0" column="1">
+           <widget class="QComboBox" name="comboProfileLayer">
+            <property name="toolTip"><string>Sélectionnez la couche de lignes le long de laquelle le profil sera calculé.</string></property>
+           </widget>
+          </item>
+
+          <item row="1" column="0">
+           <widget class="QLabel" name="lbl_auto_14"><property name="text"><string>MNT de référence</string></property>
+            <property name="toolTip"><string>MNT utilisé pour échantillonner l'altitude. Si la couche de cheminement contient déjà des coordonnées Z, elles seront utilisées en priorité.</string></property></widget>
+          </item>
+          <item row="1" column="1">
+           <widget class="QComboBox" name="comboDEM2">
+            <property name="toolTip"><string>MNT depuis lequel extraire les altitudes le long du profil.</string></property>
+           </widget>
+          </item>
+
+          <item row="2" column="0">
+           <widget class="QLabel" name="lbl_auto_15"><property name="text"><string>Espacement points (m)</string></property>
+            <property name="toolTip"><string>Distance entre deux points d'échantillonnage successifs le long de la ligne (en mètres). Une valeur trop petite ralentit le calcul ; trop grande perd du détail.</string></property></widget>
+          </item>
+          <item row="2" column="1">
+           <widget class="QDoubleSpinBox" name="doubleSpinBoxSpacing">
+            <property name="minimum"><double>0.100000000000000</double></property>
+            <property name="maximum"><double>100.000000000000000</double></property>
+            <property name="value"><double>1.000000000000000</double></property>
+            <property name="toolTip"><string>Pas d'échantillonnage en mètres. Exemple : 1 m pour un LiDAR haute résolution, 5 m pour un MNT 5 m.</string></property>
+           </widget>
+          </item>
+
+          <item row="3" column="0" colspan="2">
+           <widget class="QCheckBox" name="checkBoxInterpolate">
+            <property name="text"><string>Interpoler les valeurs manquantes</string></property>
+            <property name="checked"><bool>true</bool></property>
+            <property name="toolTip"><string>Si coché, les trous (NoData) dans le MNT sont comblés par interpolation linéaire entre les points valides voisins.</string></property>
+           </widget>
+          </item>
+
+          <item row="4" column="0">
+           <widget class="QCheckBox" name="checkBoxMaxGap">
+            <property name="text"><string>Distance max interpolation (m)</string></property>
+            <property name="toolTip"><string>Limite la longueur des gaps comblés. Au-delà de cette distance, le trou n'est pas interpolé (laissé vide dans le CSV).</string></property>
+           </widget>
+          </item>
+          <item row="4" column="1">
+           <widget class="QDoubleSpinBox" name="doubleSpinBoxMaxGap">
+            <property name="enabled"><bool>false</bool></property>
+            <property name="minimum"><double>0.100000000000000</double></property>
+            <property name="maximum"><double>1000.000000000000000</double></property>
+            <property name="value"><double>10.000000000000000</double></property>
+            <property name="toolTip"><string>Distance maximale (m) sur laquelle l'interpolation est appliquée. Les gaps plus grands sont laissés vides.</string></property>
+           </widget>
+          </item>
+         </layout>
+        </widget>
+       </item>
+
+       <item>
+        <widget class="QPushButton" name="btnGenerateProfile">
+         <property name="text"><string>▶  Générer le profil développé</string></property>
+         <property name="toolTip"><string>Génère le profil, l'affiche dans l'aperçu ci-dessous et exporte en CSV (+ PNG si matplotlib est disponible).</string></property>
+         <property name="styleSheet"><string>QPushButton { background-color:#9C27B0; color:white; padding:6px; border-radius:4px; font-weight:bold; } QPushButton:hover { background-color:#7B1FA2; }</string></property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QGraphicsView" name="viewProfile">
+         <property name="minimumSize"><size><width>400</width><height>160</height></size></property>
+         <property name="toolTip"><string>Aperçu du profil altimétrique généré.</string></property>
+        </widget>
+       </item>
+      </layout>
+     </widget>
+     <widget class="QWidget" name="tabDolines">
+      <attribute name="title"><string>🕳 Dolines</string></attribute>
+      <layout class="QVBoxLayout" name="vDolines">
+       <property name="spacing"><number>6</number></property>
+
+       <item>
+        <widget class="QLabel" name="lblDolinesInfo">
+         <property name="text"><string>&lt;b&gt;Détection automatique de dolines&lt;/b&gt; — Algorithme en 7 étapes : remplissage de dépressions (Fill Sinks) → raster de différence → vectorisation → clustering DBSCAN → polygones enveloppants → statistiques zonales. Ajustez les seuils selon la résolution et la géologie.</string></property>
+         <property name="wordWrap"><bool>true</bool></property>
+         <property name="styleSheet"><string>QLabel { background:#fff3e0; border:1px solid #ffcc80; border-radius:4px; padding:6px; color:#5d3a00; }</string></property>
+        </widget>
+       </item>
+
+       <item>
+        <widget class="QGroupBox" name="grpDolinesIn">
+         <property name="title"><string>Données d'entrée</string></property>
+         <layout class="QFormLayout" name="fDolinesIn">
+          <property name="labelAlignment"><set>Qt::AlignRight</set></property>
+          <item row="0" column="0">
+           <widget class="QLabel" name="lbl_auto_16"><property name="text"><string>MNT</string></property><property name="toolTip"><string>MNT LiDAR haute résolution (idéalement &lt; 2 m/px). La qualité du MNT est le facteur principal de la détection.</string></property></widget>
+          </item>
+          <item row="0" column="1">
+           <widget class="QComboBox" name="comboDolinesDEM">
+            <property name="toolTip"><string>Sélectionnez le MNT à analyser pour la détection de dolines.</string></property>
+           </widget>
+          </item>
+         </layout>
+        </widget>
+       </item>
+
+       <item>
+        <widget class="QGroupBox" name="grpDolinesParams">
+         <property name="title"><string>Paramètres de détection</string></property>
+         <layout class="QFormLayout" name="fDolinesParams">
+          <property name="labelAlignment"><set>Qt::AlignRight</set></property>
+
+          <item row="0" column="0">
+           <widget class="QLabel" name="lblMinSlope">
+            <property name="text"><string>Pente minimale (minslope)</string></property>
+            <property name="toolTip"><string>Pente minimale (en degrés) prise en compte lors du remplissage des dépressions (Fill Sinks SAGA). Une valeur faible (0.01–0.1°) est adaptée aux dolines peu marquées ; une valeur plus grande évite le remplissage de reliefs plats non pertinents.</string></property>
+           </widget>
+          </item>
+          <item row="0" column="1">
+           <widget class="QDoubleSpinBox" name="doubleMinslope">
+            <property name="decimals"><number>3</number></property>
+            <property name="minimum"><double>0.000000000000000</double></property>
+            <property name="maximum"><double>1000.000000000000000</double></property>
+            <property name="value"><double>0.100000000000000</double></property>
+            <property name="toolTip"><string>Valeur typique : 0.01–1.0°. Augmentez si trop de faux positifs sur terrain plat. Diminuez pour détecter de très petites dolines.</string></property>
+           </widget>
+          </item>
+
+          <item row="1" column="0">
+           <widget class="QLabel" name="lblSinkThreshold">
+            <property name="text"><string>Seuil de dépression (m)</string></property>
+            <property name="toolTip"><string>Différence d'altitude minimale (en mètres) entre le MNT original et le MNT rempli pour qu'un pixel soit considéré comme une dépression. Filtre le bruit du MNT.</string></property>
+           </widget>
+          </item>
+          <item row="1" column="1">
+           <widget class="QDoubleSpinBox" name="doubleSinkThreshold">
+            <property name="decimals"><number>3</number></property>
+            <property name="minimum"><double>0.000000000000000</double></property>
+            <property name="maximum"><double>10000.000000000000000</double></property>
+            <property name="value"><double>1.000000000000000</double></property>
+            <property name="toolTip"><string>En mètres. Exemple : 0.5 m pour LiDAR 25 cm, 1–2 m pour MNT 1 m. Trop bas = beaucoup de bruit ; trop haut = dolines manquées.</string></property>
+           </widget>
+          </item>
+
+          <item row="2" column="0">
+           <widget class="QLabel" name="lblAreaThreshold">
+            <property name="text"><string>Surface minimale (m²)</string></property>
+            <property name="toolTip"><string>Surface minimale (en m²) des polygones de dépressions conservés. Filtre les pixels isolés et les artefacts. Dépend de la résolution et de la taille des dolines attendues.</string></property>
+           </widget>
+          </item>
+          <item row="2" column="1">
+           <widget class="QDoubleSpinBox" name="doubleAreaThreshold">
+            <property name="decimals"><number>3</number></property>
+            <property name="minimum"><double>0.000000000000000</double></property>
+            <property name="maximum"><double>1000000000.000000000000000</double></property>
+            <property name="value"><double>1.000000000000000</double></property>
+            <property name="toolTip"><string>En mètres carrés. Exemple : 4 m² pour LiDAR 0.5 m (= 4 pixels minimum), 25 m² pour MNT 5 m. Augmentez pour filtrer les petites anomalies.</string></property>
+           </widget>
+          </item>
+
+          <item row="3" column="0">
+           <widget class="QLabel" name="lblDBSCEps">
+            <property name="text"><string>DBSCAN — Rayon regroupement (m)</string></property>
+            <property name="toolTip"><string>Rayon de voisinage (epsilon) de l'algorithme DBSCAN pour regrouper les points de dépressions en dolines distinctes. Typiquement 1–5× la résolution du MNT.</string></property>
+           </widget>
+          </item>
+          <item row="3" column="1">
+           <widget class="QDoubleSpinBox" name="doubleDBSCEps">
+            <property name="decimals"><number>3</number></property>
+            <property name="minimum"><double>0.000000000000000</double></property>
+            <property name="maximum"><double>10000.000000000000000</double></property>
+            <property name="value"><double>1.000000000000000</double></property>
+            <property name="toolTip"><string>En mètres. Exemple : 5 m pour LiDAR 1 m, 20 m pour MNT 5 m. Trop grand = plusieurs dolines fusionnées ; trop petit = une doline fragmentée en plusieurs clusters.</string></property>
+           </widget>
+          </item>
+
+          <item row="4" column="0">
+           <widget class="QLabel" name="lblDBSCMin">
+            <property name="text"><string>DBSCAN — Points min. par cluster</string></property>
+            <property name="toolTip"><string>Nombre minimal de points de dépression pour former un cluster DBSCAN valide. Filtre les clusters de très petite taille (bruit).</string></property>
+           </widget>
+          </item>
+          <item row="4" column="1">
+           <widget class="QSpinBox" name="spinDBSCMin">
+            <property name="minimum"><number>1</number></property>
+            <property name="maximum"><number>1000000</number></property>
+            <property name="value"><number>5</number></property>
+            <property name="toolTip"><string>Minimum de points dans un cluster pour qu'il soit retenu comme doline. 3–10 est raisonnable. Augmentez pour ne garder que les grandes dépressions.</string></property>
+           </widget>
+          </item>
+         </layout>
+        </widget>
+       </item>
+
+       <item>
+        <widget class="QGroupBox" name="grpDolinesOut">
+         <property name="title"><string>Sortie</string></property>
+         <layout class="QFormLayout" name="fDolinesOut">
+          <property name="labelAlignment"><set>Qt::AlignRight</set></property>
+          <item row="0" column="0">
+           <widget class="QLabel" name="Save_Temp"><property name="text"><string>Sauvegarder les couches intermédiaires</string></property>
+            <property name="toolTip"><string>Si coché, toutes les couches intermédiaires (raster de différence, points vectorisés, clusters…) sont sauvegardées dans le dossier de sortie.</string></property></widget>
+          </item>
+          <item row="0" column="1">
+           <widget class="QCheckBox" name="checkBox_savetemp">
+            <property name="toolTip"><string>Cochez pour conserver les étapes intermédiaires de l'algorithme (utile pour le débogage et la validation).</string></property>
+           </widget>
+          </item>
+          <item row="1" column="0">
+           <widget class="QLabel" name="lblDolinesOutput"><property name="text"><string>Dossier de sortie (optionnel)</string></property>
+            <property name="toolTip"><string>Dossier où seront écrits les résultats. Laisser vide = couches mémoire temporaires dans QGIS.</string></property></widget>
+          </item>
+          <item row="1" column="1">
+           <layout class="QHBoxLayout" name="layoutDolinesOut">
+            <item>
+             <widget class="QLineEdit" name="lineOutFolderDolines">
+              <property name="placeholderText"><string>Laisser vide → couches mémoire QGIS</string></property>
+              <property name="toolTip"><string>Chemin du dossier de sortie. Laisser vide pour créer des couches mémoire dans QGIS.</string></property>
+             </widget>
+            </item>
+            <item>
+             <widget class="QPushButton" name="btnBrowseDolines">
+              <property name="text"><string>📂</string></property>
+              <property name="maximumWidth"><number>32</number></property>
+             </widget>
+            </item>
+           </layout>
+          </item>
+         </layout>
+        </widget>
+       </item>
+
+       <item>
+        <widget class="QPushButton" name="btnRunDolines">
+         <property name="text"><string>▶  Lancer la détection de dolines</string></property>
+         <property name="styleSheet"><string>QPushButton { background-color:#FF5722; color:white; padding:6px; border-radius:4px; font-weight:bold; } QPushButton:hover { background-color:#D84315; }</string></property>
+         <property name="toolTip"><string>Lance la détection automatique de dolines en 7 étapes.</string></property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QProgressBar" name="progressDolines">
+         <property name="minimum"><number>0</number></property>
+         <property name="maximum"><number>100</number></property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QTextEdit" name="textLogDolines">
+         <property name="minimumSize"><size><width>400</width><height>90</height></size></property>
+         <property name="readOnly"><bool>true</bool></property>
+         <property name="placeholderText"><string>Logs et résultats (centroids, polygones, erreurs…)</string></property>
+         <property name="styleSheet"><string>QTextEdit { background:#1e1e1e; color:#d4d4d4; font-family:monospace; font-size:10px; border-radius:3px; }</string></property>
+        </widget>
+       </item>
+      </layout>
+     </widget>
+     <widget class="QWidget" name="tabTherion">
+      <attribute name="title"><string>🗺 Import Therion</string></attribute>
+      <layout class="QVBoxLayout" name="vTherion">
+       <property name="spacing"><number>6</number></property>
+       <item>
+        <widget class="QLabel" name="lblTherionInfo">
+         <property name="text"><string>&lt;b&gt;Import des sorties Therion&lt;/b&gt; — Sélectionnez le dossier contenant les SHP exportés par Therion (outline2d, lines2d, areas2d, points2d, shots3d, stations3d, walls3d). Le traitement répare les géométries, découpe les lignes/aires sur l'outline, ajoute les altitudes et importe tout dans un groupe QGIS avec les styles appropriés.</string></property>
+         <property name="wordWrap"><bool>true</bool></property>
+         <property name="styleSheet"><string>QLabel { background:#e8f5e9; border:1px solid #a5d6a7; border-radius:4px; padding:6px; color:#1b5e20; }</string></property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QGroupBox" name="grpTherionPaths">
+         <property name="title"><string>Chemins</string></property>
+         <layout class="QFormLayout" name="fTherionPaths">
+          <property name="labelAlignment"><set>Qt::AlignRight</set></property>
+
+          <item row="0" column="0">
+           <widget class="QLabel" name="lbl_auto_17">
+            <property name="text"><string>Dossier SHP Therion</string></property>
+            <property name="toolTip"><string>Dossier contenant tous les shapefiles exportés par Therion : outline2d.shp, lines2d.shp, areas2d.shp, points2d.shp, shots3d.shp, stations3d.shp, walls3d.shp.</string></property>
+           </widget>
+          </item>
+          <item row="0" column="1">
+           <layout class="QHBoxLayout">
+            <item>
+             <widget class="QLineEdit" name="editTherionShpPath">
+              <property name="placeholderText"><string>ex. C:/Projets/MaGrotte/Outputs/SHP/</string></property>
+              <property name="toolTip"><string>Chemin complet du dossier contenant les SHP Therion. Doit contenir au minimum outline2d.shp et lines2d.shp.</string></property>
+             </widget>
+            </item>
+            <item>
+             <widget class="QPushButton" name="btnBrowseTherionShp">
+              <property name="text"><string>📂</string></property>
+              <property name="maximumWidth"><number>32</number></property>
+              <property name="toolTip"><string>Parcourir pour sélectionner le dossier SHP.</string></property>
+             </widget>
+            </item>
+           </layout>
+          </item>
+
+          <item row="1" column="0">
+           <widget class="QLabel" name="lbl_auto_18">
+            <property name="text"><string>Dossier de sortie GPKG</string></property>
+            <property name="toolTip"><string>Dossier où seront écrits les GeoPackages résultats. Si vide, un sous-dossier GPKG/ est créé dans le dossier SHP.</string></property>
+           </widget>
+          </item>
+          <item row="1" column="1">
+           <layout class="QHBoxLayout">
+            <item>
+             <widget class="QLineEdit" name="editTherionGpkgPath">
+              <property name="placeholderText"><string>Laisser vide → sous-dossier GPKG/ automatique</string></property>
+              <property name="toolTip"><string>Dossier de sortie pour les GPKG. Par défaut, un sous-dossier GPKG/ est créé dans le dossier SHP Therion.</string></property>
+             </widget>
+            </item>
+            <item>
+             <widget class="QPushButton" name="btnBrowseTherionGpkg">
+              <property name="text"><string>📂</string></property>
+              <property name="maximumWidth"><number>32</number></property>
+              <property name="toolTip"><string>Parcourir pour sélectionner le dossier de sortie GPKG.</string></property>
+             </widget>
+            </item>
+           </layout>
+          </item>
+         </layout>
+        </widget>
+       </item>
+       <item>
+        <widget class="QGroupBox" name="grpTherionStyles">
+         <property name="title"><string>Styles QML (optionnel)</string></property>
+         <property name="toolTip"><string>Fichiers de style QGIS (.qml) à appliquer aux couches importées. Laissez vide pour utiliser les styles par défaut.</string></property>
+         <layout class="QFormLayout" name="fTherionStyles">
+          <property name="labelAlignment"><set>Qt::AlignRight</set></property>
+          <item row="0" column="0" colspan="2">
+           <widget class="QLabel" name="lbl_auto_19">
+            <property name="text"><string>— Couches 2D —</string></property>
+            <property name="styleSheet"><string>color:#555; font-style:italic;</string></property>
+           </widget>
+          </item>
+
+          <item row="1" column="0">
+           <widget class="QLabel" name="lbl_auto_20">
+            <property name="text"><string>Style aires 2D</string></property>
+            <property name="toolTip"><string>Fichier .qml pour les aires 2D (areas2dMasked.gpkg). Laissez vide pour le style QGIS par défaut.</string></property>
+           </widget>
+          </item>
+          <item row="1" column="1">
+           <layout class="QHBoxLayout">
+            <item><widget class="QLineEdit" name="editStyleAreas2D"><property name="placeholderText"><string>chemin/vers/style_areas2d.qml</string></property><property name="toolTip"><string>Fichier QML de style pour les aires topographiques 2D.</string></property></widget></item>
+            <item><widget class="QPushButton" name="btnStyleAreas2D"><property name="text"><string>…</string></property><property name="maximumWidth"><number>28</number></property></widget></item>
+           </layout>
+          </item>
+
+          <item row="2" column="0">
+           <widget class="QLabel" name="lbl_auto_21">
+            <property name="text"><string>Style lignes 2D</string></property>
+            <property name="toolTip"><string>Fichier .qml pour les lignes 2D (lines2dMasked.gpkg).</string></property>
+           </widget>
+          </item>
+          <item row="2" column="1">
+           <layout class="QHBoxLayout">
+            <item><widget class="QLineEdit" name="editStyleLines2D"><property name="placeholderText"><string>chemin/vers/style_lines2d.qml</string></property><property name="toolTip"><string>Fichier QML de style pour les lignes topographiques 2D (murs, courbes…).</string></property></widget></item>
+            <item><widget class="QPushButton" name="btnStyleLines2D"><property name="text"><string>…</string></property><property name="maximumWidth"><number>28</number></property></widget></item>
+           </layout>
+          </item>
+
+          <item row="3" column="0">
+           <widget class="QLabel" name="lbl_auto_22">
+            <property name="text"><string>Style points 2D</string></property>
+            <property name="toolTip"><string>Fichier .qml pour les points 2D (points2dAlt.gpkg).</string></property>
+           </widget>
+          </item>
+          <item row="3" column="1">
+           <layout class="QHBoxLayout">
+            <item><widget class="QLineEdit" name="editStylePoints2D"><property name="placeholderText"><string>chemin/vers/style_points2d.qml</string></property><property name="toolTip"><string>Fichier QML de style pour les points topographiques 2D (symboles, légendes…).</string></property></widget></item>
+            <item><widget class="QPushButton" name="btnStylePoints2D"><property name="text"><string>…</string></property><property name="maximumWidth"><number>28</number></property></widget></item>
+           </layout>
+          </item>
+
+          <item row="4" column="0">
+           <widget class="QLabel" name="lbl_style_outline2d">
+            <property name="text"><string>Style outline 2D</string></property>
+            <property name="toolTip"><string>Fichier .qml pour l'outline 2D (outline2d.gpkg). Appliqué à la couche de contour de la cavité.</string></property>
+           </widget>
+          </item>
+          <item row="4" column="1">
+           <layout class="QHBoxLayout">
+            <item><widget class="QLineEdit" name="editStyleOutline2D"><property name="placeholderText"><string>chemin/vers/style_outline2d.qml</string></property><property name="toolTip"><string>Fichier QML de style pour l'outline topographique 2D.</string></property></widget></item>
+            <item><widget class="QPushButton" name="btnStyleOutline2D"><property name="text"><string>…</string></property><property name="maximumWidth"><number>28</number></property></widget></item>
+           </layout>
+          </item>
+
+          <item row="5" column="0" colspan="2">
+           <widget class="QLabel" name="lbl_auto_23">
+            <property name="text"><string>— Couches 3D —</string></property>
+            <property name="styleSheet"><string>color:#555; font-style:italic;</string></property>
+           </widget>
+          </item>
+
+          <item row="6" column="0">
+           <widget class="QLabel" name="lbl_auto_24">
+            <property name="text"><string>Style shots 3D</string></property>
+            <property name="toolTip"><string>Fichier .qml pour les cheminements 3D (shots3d.gpkg).</string></property>
+           </widget>
+          </item>
+          <item row="6" column="1">
+           <layout class="QHBoxLayout">
+            <item><widget class="QLineEdit" name="editStyleShots3D"><property name="placeholderText"><string>chemin/vers/style_shots3d.qml</string></property><property name="toolTip"><string>Fichier QML de style pour les vecteurs de cheminement 3D.</string></property></widget></item>
+            <item><widget class="QPushButton" name="btnStyleShots3D"><property name="text"><string>…</string></property><property name="maximumWidth"><number>28</number></property></widget></item>
+           </layout>
+          </item>
+
+          <item row="7" column="0">
+           <widget class="QLabel" name="lbl_auto_25">
+            <property name="text"><string>Style stations 3D</string></property>
+            <property name="toolTip"><string>Fichier .qml pour les stations 3D (stations3dAlt.gpkg).</string></property>
+           </widget>
+          </item>
+          <item row="7" column="1">
+           <layout class="QHBoxLayout">
+            <item><widget class="QLineEdit" name="editStyleStations3D"><property name="placeholderText"><string>chemin/vers/style_stations3d.qml</string></property><property name="toolTip"><string>Fichier QML de style pour les points de station topographique 3D.</string></property></widget></item>
+            <item><widget class="QPushButton" name="btnStyleStations3D"><property name="text"><string>…</string></property><property name="maximumWidth"><number>28</number></property></widget></item>
+           </layout>
+          </item>
+
+          <item row="8" column="0">
+           <widget class="QLabel" name="lbl_auto_26">
+            <property name="text"><string>Style walls 3D</string></property>
+            <property name="toolTip"><string>Fichier .qml pour les parois 3D (walls3d.shp).</string></property>
+           </widget>
+          </item>
+          <item row="8" column="1">
+           <layout class="QHBoxLayout">
+            <item><widget class="QLineEdit" name="editStyleWalls3D"><property name="placeholderText"><string>chemin/vers/style_walls3d.qml</string></property><property name="toolTip"><string>Fichier QML de style pour les parois 3D exportées par Therion.</string></property></widget></item>
+            <item><widget class="QPushButton" name="btnStyleWalls3D"><property name="text"><string>…</string></property><property name="maximumWidth"><number>28</number></property></widget></item>
+           </layout>
+          </item>
+
+         </layout>
+        </widget>
+       </item>
+       <item>
+        <widget class="QGroupBox" name="grpTherionOptions">
+         <property name="title"><string>Options</string></property>
+         <layout class="QVBoxLayout">
+          <item>
+           <widget class="QCheckBox" name="chkRepairGeom">
+            <property name="text"><string>Réparer les géométries avant traitement</string></property>
+            <property name="checked"><bool>true</bool></property>
+            <property name="toolTip"><string>Applique native:fixgeometries sur chaque couche avant les opérations de découpe. Corrige les auto-intersections, anneaux mal formés, etc. Recommandé.</string></property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QCheckBox" name="chkAddAlt">
+            <property name="text"><string>Ajouter les champs altitude / X / Y aux points</string></property>
+            <property name="checked"><bool>true</bool></property>
+            <property name="toolTip"><string>Extrait la coordonnée Z des géométries 3D et l'écrit dans un champ attributaire _ALT (arrondi en mètres entiers), ainsi que _EASTING et _NORTHING.</string></property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QCheckBox" name="chkGroupLayers">
+            <property name="text"><string>Importer dans un groupe nommé</string></property>
+            <property name="checked"><bool>true</bool></property>
+            <property name="toolTip"><string>Crée un groupe dans le panneau des couches QGIS et y place toutes les couches importées.</string></property>
+           </widget>
+          </item>
+          <item>
+           <widget class="QLineEdit" name="editGroupName">
+            <property name="placeholderText"><string>Nom du groupe (ex. MaGrotte_Therion)</string></property>
+            <property name="toolTip"><string>Nom du groupe QGIS dans lequel seront importées toutes les couches. Si vide, le nom du dossier SHP est utilisé.</string></property>
+           </widget>
+          </item>
+         </layout>
+        </widget>
+       </item>
+       <item>
+        <widget class="QPushButton" name="btnRunTherion">
+         <property name="text"><string>▶  Importer les sorties Therion</string></property>
+         <property name="styleSheet"><string>QPushButton { background-color:#388E3C; color:white; padding:7px; border-radius:4px; font-weight:bold; } QPushButton:hover { background-color:#2E7D32; }</string></property>
+         <property name="toolTip"><string>Lance le traitement complet : réparation géométries → découpe outline → ajout altitudes → conversion GPKG → import QGIS avec styles.</string></property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QProgressBar" name="progressTherion">
+         <property name="minimum"><number>0</number></property>
+         <property name="maximum"><number>100</number></property>
+        </widget>
+       </item>
+       <item>
+        <widget class="QTextEdit" name="textLogTherion">
+         <property name="minimumHeight"><number>100</number></property>
+         <property name="readOnly"><bool>true</bool></property>
+         <property name="placeholderText"><string>Journal d'import Therion…</string></property>
+         <property name="styleSheet"><string>QTextEdit { background:#1e1e1e; color:#d4d4d4; font-family:monospace; font-size:10px; border-radius:3px; }</string></property>
+        </widget>
+       </item>
+
+      </layout>
+     </widget>
+
+    </widget>
+   </item>
+  </layout>
+ </widget>
+ <resources/>
+ <connections>
+  <connection>
+   <sender>checkBoxMaxGap</sender>
+   <signal>toggled(bool)</signal>
+   <receiver>doubleSpinBoxMaxGap</receiver>
+   <slot>setEnabled(bool)</slot>
+   <hints>
+    <hint type="sourcelabel"><x>20</x><y>20</y></hint>
+    <hint type="destinationlabel"><x>20</x><y>20</y></hint>
+   </hints>
+  </connection>
+ </connections>
+</ui>

@@ -1,0 +1,9 @@
+[general]
+name=SpeleoTools
+qgisMinimumVersion=3.10
+qgisMaximumVersion=3.99
+description=Outils spéléo pour QGIS : import, épaisseur roche, profils, prospection MNT.
+version=1.1
+author=Benoit Urruty
+email=b.urruty77@gmail.com
+about=Plugin QGIS pour la spéléologie.
