@@ -3,8 +3,7 @@ from qgis.core import (
     QgsGeometry, QgsPointXY, QgsPoint, QgsDistanceArea, QgsMessageLog, Qgis,QgsWkbTypes,QgsVectorFileWriter,QgsApplication,QgsRasterLayer,
     QgsCoordinateTransform,
     QgsCoordinateReferenceSystem)
-from PyQt5.QtCore import QVariant
-from qgis.PyQt.QtCore import QMetaType
+from .speleo_compat import TYPE_INT, TYPE_DOUBLE, field as _field
 
 import processing
 from processing.core.Processing import Processing
@@ -17,22 +16,27 @@ Processing.initialize()
 
 import math
 # ---------- UTILITAIRES ----------
-def sample_raster_at_point(raster_layer, qgs_point):
+def sample_raster_at_point(raster_layer, qgs_point, source_crs=None):
+    """Valeur du raster au point donné.
+
+    source_crs : SCR dans lequel qgs_point est exprimé (celui de la couche
+    d'origine).  Par défaut, le point est supposé déjà dans le SCR du raster.
+    """
     from qgis.core import QgsPointXY, QgsCoordinateTransform, QgsProject
-    
+
     # convert 3D point en 2D
     point_xy = QgsPointXY(qgs_point.x(), qgs_point.y())
-    
+
     # transformation CRS si nécessaire
-    if raster_layer.crs() != QgsProject.instance().crs():
-        transform = QgsCoordinateTransform(QgsProject.instance().crs(), raster_layer.crs(), QgsProject.instance())
+    if source_crs is not None and source_crs.isValid() and source_crs != raster_layer.crs():
+        transform = QgsCoordinateTransform(source_crs, raster_layer.crs(),
+                                           QgsProject.instance())
         point_xy = transform.transform(point_xy)
-    
+
     val, ok = raster_layer.dataProvider().sample(point_xy, 1)
-    if ok:
+    if ok and val is not None and not math.isnan(float(val)):
         return float(val)
-    else:
-        return None
+    return None
 
 
 def layer_feature_elevation(feat):
@@ -68,6 +72,88 @@ def layer_feature_elevation(feat):
 
     return None
 
+def iter_thickness_points(dem_layer, cave_layer, dedup=True, feedback=None):
+    """Parcourt les sommets de cave_layer et renvoie, pour chacun,
+    (QgsPointXY, altitude surface, altitude cavité, épaisseur, id source).
+
+    Les points sont reprojetés dans le SCR du MNT pour l'échantillonnage ;
+    la géométrie renvoyée reste dans le SCR de la couche cavité.
+    """
+    seen = set()
+    xform = None
+    if cave_layer.crs().isValid() and cave_layer.crs() != dem_layer.crs():
+        xform = QgsCoordinateTransform(cave_layer.crs(), dem_layer.crs(),
+                                       QgsProject.instance())
+    for feat in cave_layer.getFeatures():
+        if feedback is not None and feedback.isCanceled():
+            return
+        geom = feat.geometry()
+        if geom is None or geom.isEmpty():
+            continue
+        geom_type = QgsWkbTypes.geometryType(geom.wkbType())
+        if geom_type == QgsWkbTypes.PointGeometry:
+            verts = list(geom.vertices())
+        elif geom_type == QgsWkbTypes.LineGeometry:
+            verts = list(geom.vertices())
+        else:
+            continue
+
+        for v in verts:
+            pt = QgsPointXY(v.x(), v.y())
+            # dédoublonnage par grille de 10 cm, dans le SCR du MNT : en
+            # degrés, un arrondi à 0,1 confondrait des points distants de km
+            pt_dem = xform.transform(pt) if xform is not None else pt
+            if dedup:
+                key = (round(pt_dem.x(), 1), round(pt_dem.y(), 1))   # 10 cm
+                if key in seen:
+                    continue
+                seen.add(key)
+
+            surf_elev = sample_raster_at_point(dem_layer, pt_dem)
+            try:
+                cave_elev = float(v.z()) if v.is3D() and not math.isnan(v.z()) else None
+            except Exception:
+                cave_elev = None
+            if cave_elev is None:
+                cave_elev = layer_feature_elevation(feat)
+            if surf_elev is None or cave_elev is None:
+                continue
+            yield (pt, surf_elev, cave_elev, surf_elev - cave_elev, feat.id())
+
+
+def as_layer(obj, name="couche"):
+    """Retourne un QgsVectorLayer depuis un résultat de processing
+    (chemin, identifiant mémoire ou couche)."""
+    if isinstance(obj, QgsVectorLayer):
+        return obj
+    lyr = QgsVectorLayer(obj, name, "ogr")
+    if not lyr.isValid():
+        lyr = QgsVectorLayer(obj, name, "memory")
+    if not lyr.isValid():
+        raise ValueError("Couche illisible : %s" % obj)
+    return lyr
+
+
+def fill_gaps_linear(distances, elevations, max_gap=None):
+    """Comble les altitudes manquantes (None/NaN) par interpolation linéaire
+    en fonction de la distance. Les trous plus longs que max_gap sont laissés."""
+    out = [None if (z is None or (isinstance(z, float) and math.isnan(z))) else float(z)
+           for z in elevations]
+    known = [i for i, z in enumerate(out) if z is not None]
+    if len(known) < 2:
+        return out
+    for a, b in zip(known[:-1], known[1:]):
+        if b == a + 1:
+            continue
+        gap = distances[b] - distances[a]
+        if max_gap is not None and gap > max_gap:
+            continue
+        for i in range(a + 1, b):
+            t = ((distances[i] - distances[a]) / gap) if gap > 1e-12 else 0.0
+            out[i] = out[a] + t * (out[b] - out[a])
+    return out
+
+
 # ---------- 1) ÉPAISSEUR ----------
 def compute_thickness(dem_layer, cave_layer, out_path=None, layer_name="Thickness"):
     """
@@ -79,68 +165,36 @@ def compute_thickness(dem_layer, cave_layer, out_path=None, layer_name="Thicknes
     """
     # Préparation couche sortie (points)
     fields = QgsFields()
-    fields.append(QgsField("src_elev", QVariant.Double))
-    fields.append(QgsField("cave_elev", QVariant.Double))
-    fields.append(QgsField("thickness", QVariant.Double))
-    fields.append(QgsField("fid_src", QVariant.Int))
+    fields.append(_field("src_elev", TYPE_DOUBLE))
+    fields.append(_field("cave_elev", TYPE_DOUBLE))
+    fields.append(_field("thickness", TYPE_DOUBLE))
+    fields.append(_field("fid_src", TYPE_INT))
 
-    mem_layer = QgsVectorLayer("Point?crs=" + dem_layer.crs().authid(), "thickness_points", "memory")
+    mem_layer = QgsVectorLayer("Point?crs=" + (cave_layer.crs().authid() or dem_layer.crs().authid()),
+                               "thickness_points", "memory")
     mem_dp = mem_layer.dataProvider()
     mem_dp.addAttributes(fields)
     mem_layer.updateFields()
 
+    if cave_layer.crs() != dem_layer.crs():
+        QgsMessageLog.logMessage(
+            "Épaisseur : couche cavité en %s, MNT en %s — reprojection des points."
+            % (cave_layer.crs().authid(), dem_layer.crs().authid()),
+            "SpeleoTools", Qgis.Info)
+
     da = QgsDistanceArea()
     features_added = 0
 
-    # Ensemble pour stocker les points déjà ajoutés (arrondis à 10 cm)
-    added_points = set()
-
-    for feat in cave_layer.getFeatures():
-        geom = feat.geometry()
-        geom_type = QgsWkbTypes.geometryType(geom.wkbType())
-
-        if geom_type == QgsWkbTypes.PointGeometry:
-            pts = [QgsPointXY(geom.asPoint())]
-        elif geom_type == QgsWkbTypes.LineGeometry:
-            pts = [QgsPointXY(v) for v in geom.vertices()]
-        else:
-            continue  # ignorer autres types
-
-        # Boucle principale sur les vertices
-        for p in pts:
-            # Arrondir les coordonnées à 10 cm (0.1 m)
-            x_rounded = round(p.x(), 2)
-            y_rounded = round(p.y(), 2)
-
-            # Si le point arrondi existe déjà, ignorer
-            if (x_rounded, y_rounded) in added_points:
-                continue
-
-            # Ajouter le point arrondi à l'ensemble
-            added_points.add((x_rounded, y_rounded))
-
-            # Calcul thickness
-            surf_elev = sample_raster_at_point(dem_layer, QgsPointXY(p.x(), p.y()))
-            try:
-                cave_elev = float(p.z()) if p.z() is not None else None
-            except Exception:
-                cave_elev = None
-
-            if cave_elev is None:
-                cave_elev = layer_feature_elevation(feat)
-            if surf_elev is None or cave_elev is None:
-                continue
-
-            thickness = surf_elev - cave_elev
-            new_feat = QgsFeature()
-            new_feat.setGeometry(QgsGeometry.fromPointXY(QgsPointXY(p.x(), p.y())))
-            new_feat.setFields(mem_layer.fields())
-            new_feat['src_elev'] = surf_elev
-            new_feat['cave_elev'] = cave_elev
-            new_feat['thickness'] = thickness
-            new_feat['fid_src'] = feat.id()
-            mem_dp.addFeatures([new_feat])
-            features_added += 1
+    for pt, surf_elev, cave_elev, thickness, fid in iter_thickness_points(dem_layer, cave_layer):
+        new_feat = QgsFeature()
+        new_feat.setGeometry(QgsGeometry.fromPointXY(pt))
+        new_feat.setFields(mem_layer.fields())
+        new_feat['src_elev'] = surf_elev
+        new_feat['cave_elev'] = cave_elev
+        new_feat['thickness'] = thickness
+        new_feat['fid_src'] = fid
+        mem_dp.addFeatures([new_feat])
+        features_added += 1
 
     mem_layer.updateExtents()
 
@@ -342,11 +396,9 @@ def create_profile_from_line(dem_layer, line_layer, spacing=None, output_path=No
     out_layer = QgsVectorLayer(geom_type, "profiles", "memory")
     pr = out_layer.dataProvider()
     fields = QgsFields()
-    fields.append(QgsField("orig_id", QMetaType.Type.Int))
-    fields.append(QgsField("length_m", QMetaType.Type.Double))
+    fields.append(_field("orig_id", TYPE_INT))
+    fields.append(_field("length_m", TYPE_DOUBLE))
 
-    # fields.append(QgsField("orig_id", QVariant.Int))
-    # fields.append(QgsField("length_m", QVariant.Double))
     pr.addAttributes(fields)
     out_layer.updateFields()
     # distance calculator (utile si spacing non fourni)
@@ -956,20 +1008,55 @@ def _temp_path(name_prefix):
     return 'memory:' + name_prefix + '_' + str(uuid.uuid4())
 
 
+FILL_SINKS_CANDIDATES = [
+    'sagang:fillsinksxxlwangliu',
+    'saga:fillsinksxxlwangliu',
+    'sagang:fillsinkswangliu',
+    'saga:fillsinkswangliu',
+    'grass7:r.fill.dir',
+    'grass:r.fill.dir',
+]
+
+FILL_SINKS_MISSING = (
+    "Aucun algorithme de comblement des dépressions n'est disponible.\n"
+    "Installez SAGA (Traitement → Options → Fournisseurs → SAGA) ou GRASS, "
+    "puis relancez.\n"
+    "Algorithmes recherchés : " + ", ".join(FILL_SINKS_CANDIDATES) + "."
+)
+
+
+def fill_sinks_algorithm():
+    """Identifiant du premier algorithme de comblement disponible, sinon None."""
+    return _choose_alg(FILL_SINKS_CANDIDATES)
+
+
 def fill_sinks(dem_layer, minslope=0.1, filled_output=None):
-    """Etape 1 : remplit les sinks avec SAGA (sagang:fillsinksxxlwangliu)
-    dem_layer : QgsRasterLayer ou chemin
-    minslope : float
-    retourne : chemin/objet du raster rempli
+    """Etape 1 : comble les dépressions fermées du MNT.
+
+    Utilise SAGA (Wang & Liu) si disponible, sinon GRASS r.fill.dir.
+    Lève une RuntimeError explicite si aucun des deux n'est installé.
     """
     if filled_output is None:
         filled_output = _temp_path('filled')
-    params = {
+    alg = fill_sinks_algorithm()
+    if alg is None:
+        raise RuntimeError(FILL_SINKS_MISSING)
+
+    if 'r.fill.dir' in alg:
+        res = processing.run(alg, {
+            'input': dem_layer,
+            'format': 0,
+            'output': filled_output,
+            'direction': 'TEMPORARY_OUTPUT',
+            'areas': 'TEMPORARY_OUTPUT',
+        })
+        return res.get('output') or res.get('OUTPUT')
+
+    res = processing.run(alg, {
         'ELEV': dem_layer,
         'FILLED': filled_output,
         'MINSLOPE': minslope,
-    }
-    res = processing.run('sagang:fillsinksxxlwangliu', params)
+    })
     return res['FILLED']
 
 

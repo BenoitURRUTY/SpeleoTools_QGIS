@@ -34,17 +34,15 @@ class Dep(NamedTuple):
 
 
 DEPENDENCIES: list[Dep] = [
-    Dep("pandas",     "pandas",     "1.3",  True,
-        "Manipulation de tableaux de données (import Therion)"),
-    Dep("geopandas",  "geopandas",  "0.10", True,
-        "Lecture/écriture de fichiers géospatiaux (import Therion)"),
     Dep("numpy",      "numpy",      "1.20", True,
-        "Calculs matriciels (analyses MNT)"),
+        "Calculs matriciels (analyses MNT, profils)"),
     Dep("rvt",        "rvt-py",     "2.2",  False,
-        "Relief Visualization Toolbox — hillshade, SVF, VAT…\n"
-        "(optionnel : fallback GDAL si absent)"),
+        "Relief Visualization Toolbox — SVF, ouverture, SLRM, VAT…\n"
+        "(optionnel : repli GDAL pour l'ombrage et la pente)"),
     Dep("scipy",      "scipy",      None,   False,
-        "Lissage VAT et analyses supplémentaires (optionnel)"),
+        "Lissage du VAT (optionnel)"),
+    Dep("matplotlib", "matplotlib", None,   False,
+        "Graphiques PNG des profils (optionnel)"),
 ]
 
 
@@ -266,7 +264,7 @@ def requires(*import_names):
     argument booléen que le décorateur absorbe proprement.
 
     Usage :
-        @requires("geopandas", "pandas")
+        @requires("rvt")
         def run_therion_import(self): ...
     """
     def decorator(func):

@@ -16,10 +16,25 @@ Plugin QGIS complet pour l'analyse, la visualisation et la cartographie de donn�
   - [Onglet 2 : Épaisseur de roche](#onglet-2--épaisseur-de-roche)
   - [Onglet 3 : Profils topographiques](#onglet-3--profils-topographiques)
   - [Onglet 4 : Analyse MNT et Dolines](#onglet-4--analyse-mnt-et-dolines)
+  - [Onglet 6 : Topo ancienne](#onglet-6--topo-ancienne)
 - [Structure du projet](#structure-du-projet)
 - [Auteur](#auteur)
 - [Licence](#licence)
 - [Contributions](#contributions)
+
+---
+
+## 📖 Notice
+
+La documentation complète est dans [`docs/`](docs/) : une fiche par outil, chacune avec
+une **notice d'utilisation** et une partie **méthode** qui détaille le calcul réellement
+effectué (formules, paramètres, algorithmes appelés).
+
+- [Notice générale](docs/Notice.md) — installation, conventions, où est le code
+- [Import Therion](docs/Import_Therion.md) · [Épaisseur de roche](docs/Epaisseur_roche.md) · [Profils](docs/Profils.md)
+- [Visualisations MNT](docs/Visualisations_MNT.md) · [Dolines](docs/Dolines.md)
+- [Topo ancienne](docs/Topo_ancienne.md) et son [guide de calage](docs/Calage.md)
+- [Boîte à outils Processing](docs/Processing.md)
 
 ---
 
@@ -33,6 +48,7 @@ Plugin QGIS complet pour l'analyse, la visualisation et la cartographie de donn�
 - ✅ **Calculs 3D avancés** : épaisseur de roche, profils topographiques
 - ✅ **Analyse MNT** : hillshade, SVF, VAT pour la prospection
 - ✅ **Détection de dolines** : identification automatique des dépressions
+- ✅ **Topographies anciennes** : calage plan + coupe, retracé de la polygonale, reconstruction 3D
 
 ---
 
@@ -138,16 +154,66 @@ Attributs : `X_dist_m`, `Y_alt_m`, `pt_index`
 - Filtrage par seuils configurables
 - Export vectoriel (polygones + points centraux)
 
+### 📜 Numérisation de topographies anciennes (Onglet 6)
+
+Les outils existants qui reconstruisent une polygonale 3D à partir d'un plan et d'une coupe (MapToDat, Topo Calc'R) laissent le calage altimétrique manuel, station par station. Cet onglet combine les deux vues automatiquement et garde la trace de l'origine de chaque altitude (voir *Synthèse topographique de grands réseaux karstiques : méthodologie et retour d'expérience du Clot d'Aspres*).
+
+- Calage du scan du **plan** : déjà géoréférencé, 2 points connus, ou méthode « historique » (entrée + barre d'échelle + flèche nord)
+- La flèche nord peut indiquer le nord de la grille, le nord géographique ou le nord magnétique : le plugin calcule la convergence des méridiens et applique la déclinaison de l'époque
+- Calage du scan de la **coupe** (développée ou projetée) : barre d'échelle (redresse un scan penché, ou graduation verticale si la coupe est exagérée) + point de référence (X, Z)
+- Les images sources ne sont jamais modifiées : le calage produit des VRT
+- Retracé de la polygonale en polyligne sur le plan et sur la coupe (un sommet = une station, une polyligne par branche)
+- Altitude de chaque station, par ordre de priorité : **jonction** > **cote lue sur le plan** > **coupe** > **interpolation à pente constante** (ou extrapolation avec la pente du dernier tronçon connu)
+- Rattachement à une station existante (clic sur une couche de stations, ex. import Therion : X, Y, Z et `nom@survey`)
+- Jonctions automatiques : une station non nommée posée sur une station déjà calculée est fusionnée avec elle
+- Contrôle visuel sur la coupe : verticale de chaque station du plan et position 3D obtenue
+- Traçabilité : chaque station garde la source de son altitude et l'écart cote plan − coupe ; fichier de métadonnées (documents sources, date, auteurs, paramètres de calage), repris en tête du `.th`
+- Sorties : stations 3D, visées 3D, polygonale 3D (GPKG), CSV des visées, centerline Therion (`.th`) en coordonnées cartésiennes ou en visées normales (longueur, azimut, pente)
+- Contrôle : comparaison des stations reconstruites avec un levé de référence (écarts par station, statistiques, couche de vecteurs d'écart)
+
 ---
 
 ## Prérequis
 
 ### Logiciels
 
-- **QGIS 3.10+** ([télécharger](https://qgis.org/))
-- **Python 3.6+** (inclus avec QGIS)
-- Installer SAGA (https://www.sigterritoires.fr/index.php/comment-integrer-saga-a-qgis-a-partir-de-la-version-3-30/)
-- RVT (https://plugins.qgis.org/plugins/rvt-qgis/)
+- **QGIS 3.10+** ([télécharger](https://qgis.org/)) — rien d'autre n'est indispensable :
+  l'import Therion n'utilise plus geopandas ni pandas, seulement QGIS et GDAL.
+
+### Selon les fonctions utilisées
+
+| Complément | Nécessaire pour | Sans lui |
+| --- | --- | --- |
+| [rvt-py](https://pypi.org/project/rvt-py/) (`pip install rvt-py`) | SVF, ouverture, SLRM, VAT | Ombrage et pente restent disponibles via GDAL |
+| [SAGA](https://www.sigterritoires.fr/index.php/comment-integrer-saga-a-qgis-a-partir-de-la-version-3-30/) ou GRASS | Détection de dolines (comblement des dépressions) | Message explicite, le reste fonctionne |
+| scipy | Lissage du VAT | VAT non lissé |
+| matplotlib | Graphiques PNG des profils | CSV et GPKG produits quand même |
+
+Le plugin vérifie ces compléments au démarrage et propose de les installer ; tout est
+optionnel sauf numpy, fourni avec QGIS.
+
+---
+
+## Boîte à outils Processing
+
+Les traitements sont aussi publiés comme algorithmes QGIS, dans le groupe
+**SpeleoTools** de la boîte à outils. Ils s'utilisent alors en traitement par lot,
+dans les modèles graphiques, depuis la console ou avec `qgis_process`, et
+s'exécutent en tâche de fond (barre de progression et bouton Annuler) :
+
+| Algorithme | Identifiant |
+| --- | --- |
+| Épaisseur de roche | `speleotools:epaisseurroche` |
+| Visualisations MNT (prospection) | `speleotools:visualisationsmnt` |
+| Détection de dolines | `speleotools:dolines` |
+| Profil développé le long d'une polyligne | `speleotools:profildeveloppe` |
+| Draper une polyligne sur le MNT (3D) | `speleotools:drapagemnt` |
+
+```python
+processing.run("speleotools:epaisseurroche",
+               {"DEM": mnt, "CAVITE": cavite, "DEDUP": True,
+                "OUTPUT": "TEMPORARY_OUTPUT"})
+```
 
 ---
 
@@ -377,6 +443,92 @@ Cliquez sur **"Détecter dolines"**
 
 ---
 
+### Onglet 6 : Topo ancienne
+
+Reconstruit une polygonale 3D à partir du plan et de la coupe scannés d'une topographie ancienne.
+
+**0. Cavité** — nom (fichiers, groupes QGIS, survey Therion), date et auteurs du levé d'origine (`date` / `team` Therion), références des documents numérisés, dossier de sortie (par défaut `SpeleoTools_<nom>/` à côté du scan du plan). Ces informations sont conservées dans les métadonnées : les documents d'origine en sont souvent dépourvus.
+
+**① Plan**
+
+1. Choisir le scan puis **Charger** : un scan non géoréférencé s'affiche en coordonnées image.
+2. Choisir la méthode de calage :
+   - **Déjà géoréférencé** : rien à faire (le scan est chargé tel quel).
+   - **2 points connus** : cliquer chaque point sur le scan (🎯) et saisir ses coordonnées.
+   - **Entrée + échelle + nord** : cliquer l'entrée, les 2 extrémités de la barre d'échelle, puis la base et la pointe de la flèche nord. Saisir X/Y de l'entrée et la longueur de la barre, puis indiquer **ce que représente la flèche** et cliquer **🧭 Calculer** :
+
+     | La flèche indique | Azimut appliqué |
+     | --- | --- |
+     | le nord de la grille | `0` |
+     | le nord géographique | `−γ` |
+     | le nord magnétique | `D − γ` |
+
+     γ est la convergence des méridiens, calculée par le plugin à la position de l'entrée (quel que soit le SCR) ; `D` est la déclinaison à la date du levé, à saisir — le [calculateur du NCEI](https://www.ngdc.noaa.gov/geomag/calculators/magcalc.shtml) couvre 1590-2029.
+3. **Station de rattachement** : nom donné à la 1re station du tracé. **📍 Station existante** : cliquer sur un point d'une couche de stations (ex. `Stations 3D` de l'import Therion) récupère X, Y, Z et le nom (`nom@survey`). Dans ce cas, le `.th` n'écrit pas de `fix` : la reconstruction se raccorde à la cavité existante.
+4. **Caler le plan** → `plan_<nom>_cale.vrt` (échelle et rotation dans le journal).
+
+Clic droit pendant une saisie : annuler.
+
+**② Coupe**
+
+1. Charger le scan de la coupe (affiché à gauche du plan tant qu'il n'est pas calé).
+2. Type : **développée** (abscisse = longueur horizontale cumulée) ou **projetée** (azimut α, même convention que Therion `-projection [elevation α]`, axe horizontal orienté à α + 90°).
+3. Cliquer la barre d'échelle (si elle est horizontale, elle sert aussi à redresser le scan ; décocher la case pour utiliser une graduation verticale d'altitudes, indispensable si la coupe a une exagération verticale), puis le point de référence et saisir son X et son Z (l'altitude de l'entrée, en général ; ce champ suit l'altitude de l'entrée tant qu'on ne le modifie pas).
+4. **Caler la coupe** : la coupe calée s'affiche **sous le plan** (environ 10 km plus bas) : `X affiché = X + X entrée`, `Y affiché = Z + Y entrée − 10 000`. Les boutons 🔍 Plan / 🔍 Coupe passent de l'un à l'autre.
+
+**③ Tracé**
+
+1. **Tracer sur le plan** : l'outil d'ajout de ligne de QGIS s'active dans `<nom>_numerisation.gpkg|trace_plan`. Un clic par station, clic droit pour finir une branche. Le champ `branche` s'incrémente tout seul.
+2. **Tracer sur la coupe** : même chose, en suivant les **mêmes numéros de branche**.
+3. **Terminer le tracé** : enregistre et génère `stations_plan` / `stations_coupe` (un point par sommet).
+4. **Tables des stations** : renseigner
+   - `nom` : un nom identique sur le plan et sur la coupe **apparie** les deux stations. C'est indispensable en haut et en bas des puits, car en plan les deux sont presque au même endroit.
+   - `z_plan` : les cotes d'altitude écrites sur le plan.
+
+   Si un tracé est modifié, **Mettre à jour les stations** conserve les noms et les cotes déjà saisis.
+
+📖 **[docs/Calage.md](docs/Calage.md)** détaille chaque méthode de calage : ce qu'elle exige du document, les budgets d'erreur (pointé, longueur de la flèche, orientation), le choix du nord, les coupes sans barre d'échelle ou avec exagération verticale, et les contrôles à faire après calage.
+
+**⑤ Contrôle**
+
+Choisir une couche de stations d'un levé fiable et cliquer **📏 Comparer les stations
+reconstruites** : les stations de même nom sont appariées, et le plugin produit les
+écarts par station (`<nom>_ecarts_reference.csv`), une couche de vecteurs d'écart et,
+dans le journal, la moyenne, le maximum et le RMS en plan comme en altitude. C'est la
+figure de contrôle d'une reconstruction.
+
+**④ Calcul**
+
+Pour chaque branche (dans l'ordre des numéros) :
+
+1. **Appariement** plan ↔ coupe par noms. S'il n'y a aucun nom commun et que le nombre de sommets est le même, l'appariement se fait par ordre. Sinon, seules les deux entrées sont appariées.
+2. **Abscisse** de chaque station sur la coupe :
+   - coupe développée : longueur cumulée, recalée par morceaux entre stations appariées ;
+   - coupe projetée : projection sur l'axe de coupe, ajustée par moindres carrés sur les stations appariées. Un coefficient négatif ou une échelle incohérente est signalé dans le journal.
+3. **Lecture de Z sur la ligne de coupe**, entre les deux stations appariées qui encadrent la station. Pour lever l'ambiguïté des verticales, on prend la position dont l'avancement le long du tracé est le plus proche de celui du plan.
+4. **Jonctions** : une station sans nom située à moins de la tolérance « Jonction auto » (10 cm par défaut) d'une station déjà calculée prend son nom et son altitude. L'accrochage (snapping) de QGIS pendant le tracé rend ces jonctions exactes.
+5. **Fusion des sources** : jonction (station du même nom déjà calculée dans une branche précédente) > `z_plan` > coupe.
+6. Stations restées **sans altitude** : interpolation linéaire en fonction de la distance horizontale (pente constante) entre les stations connues voisines. Au-delà de la dernière station connue, extrapolation avec la pente du dernier tronçon connu.
+
+**Sorties :**
+
+```
+SpeleoTools_<nom>/
+├── <nom>_numerisation.gpkg   # trace_plan, trace_coupe, stations_plan, stations_coupe
+├── plan_<scan>_cale.vrt      # plan calé
+├── coupe_<scan>_calee.vrt    # coupe calée (repère X/Z décalé)
+├── <nom>_topo3d.gpkg         # stations_3d (PointZ), visees_3d, polygonale_3d (LineStringZ)
+├── <nom>_visees_3d.csv       # de ; vers ; longueur ; azimut ; pente ; z ; sources
+├── <nom>_ancienne.th         # centerline Therion (métadonnées, date, team, data cartesian, fix)
+└── <nom>_metadonnees.txt     # documents, date, auteurs, calages, origine des altitudes
+```
+
+Si l'option est cochée, le groupe **contrôle coupe** superpose à la coupe calée la verticale de chaque station du plan et le point 3D obtenu, coloré selon sa source. On voit ainsi immédiatement si la reconstruction suit le dessin d'origine.
+
+`stations_3d` contient `source_z` (plan / jonction / coupe / interp / extrap / defaut), `z_plan`, `z_coupe` et `dz_plan_coupe`. La symbologie colore les stations selon la source de leur altitude. Les couches 3D peuvent être passées directement à l'onglet **Épaisseur de roche**.
+
+---
+
 ## Structure du projet
 
 ```
@@ -387,6 +539,29 @@ SpeleoTools/
 ├── speleo_utils.py              # Fonctions utilitaires
 ├── speleo_dialog.ui             # Interface Qt Designer
 ├── install_dependencies.py      # Gestionnaire de dépendances
+├── docs/                        # Notice : une fiche par outil (usage + méthode)
+│   ├── Notice.md                # Sommaire, installation, conventions
+│   ├── Import_Therion.md
+│   ├── Epaisseur_roche.md
+│   ├── Profils.md
+│   ├── Visualisations_MNT.md
+│   ├── Dolines.md
+│   ├── Topo_ancienne.md
+│   ├── Calage.md                # Méthodes de calage plan / coupe en détail
+│   └── Processing.md
+│
+├── speleo_compat.py             # Compatibilité QGIS 3/4 (QVariant ↔ QMetaType)
+├── speleo_provider.py           # Algorithmes Processing
+├── topo_ancienne_core.py        # Topo ancienne : calculs (sans QGIS, testable)
+├── topo_ancienne_tab.py         # Topo ancienne : logique de l'onglet
+│
+├── tests/
+│   ├── test_topo_ancienne_core.py   # pytest (hors QGIS)
+│   ├── run_qgis_integration.py      # topo ancienne, de bout en bout dans QGIS
+│   └── run_qgis_plugin_tests.py     # épaisseur, profils, Therion, Processing
+│
+├── CHANGELOG.md                 # Journal des versions
+├── LICENSE                      # CC BY-NC-SA 4.0
 │
 ├── metadata.txt                 # Métadonnées QGIS
 ├── icon.png                     # Icône du plugin

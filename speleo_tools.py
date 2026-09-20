@@ -2,7 +2,8 @@
 """
 SpeleoTools Plugin for QGIS 3
 Auteur : Urruty Benoit
-Description : Interface complète à 4 onglets pour outils spéléo.
+Description : Interface à onglets pour outils spéléo (épaisseur, MNT, profils,
+              dolines, import Therion, numérisation de topographies anciennes).
 """
 import csv
 import math
@@ -16,22 +17,28 @@ from qgis.core import (
     QgsFeature, QgsFields, QgsField, QgsWkbTypes, QgsGeometry,
     QgsFeatureSink, QgsDistanceArea, QgsCoordinateTransformContext,
     QgsFeatureRequest, QgsMessageLog, Qgis, QgsVectorFileWriter,
-    QgsCoordinateTransform
+    QgsCoordinateTransform, QgsApplication
 )
-from PyQt5.QtCore import QVariant
+from .speleo_compat import TYPE_INT, TYPE_DOUBLE, TYPE_STRING, field as _field
 
 import numpy as np
 import heapq
 
 from .speleo_utils import *
 from .install_dependencies import requires
+from .topo_ancienne_tab import TopoAncienneMixin, PointCollectorTool
+from .speleo_provider import SpeleoToolsProvider
 
 # Charger l'interface .ui
 FORM_CLASS, _ = uic.loadUiType(os.path.join(os.path.dirname(__file__), 'speleo_dialog.ui'))
 
-class SpeleoToolsDialog(QtWidgets.QDialog, FORM_CLASS):
-    def __init__(self, parent=None):
+class SpeleoToolsDialog(TopoAncienneMixin, QtWidgets.QDialog, FORM_CLASS):
+    def __init__(self, parent=None, iface=None):
         super(SpeleoToolsDialog, self).__init__(parent)
+        self.iface = iface
+        if self.iface is None:
+            from qgis.utils import iface as _iface
+            self.iface = _iface
         self.setupUi(self)
 
         # Remplir les combobox avec les couches existantes
@@ -74,9 +81,12 @@ class SpeleoToolsDialog(QtWidgets.QDialog, FORM_CLASS):
         # Onglet 4 (dolines)
         self.btnBrowseDolines.clicked.connect(self.selectOutputDirDoline)
         self.btnRunDolines.clicked.connect(self.main_find_dolines)
+        # Onglet 6 — Topo ancienne
+        self._ta_init()
 
         QgsProject.instance().layerWasAdded.connect(self.populate_layers)
         QgsProject.instance().layersWillBeRemoved.connect(self.populate_layers)
+        self._signals_connected = True
 
         # Pré-remplir les chemins de styles avec les QML du dossier styles_therion/
         self._prefill_style_paths()
@@ -90,18 +100,26 @@ class SpeleoToolsDialog(QtWidgets.QDialog, FORM_CLASS):
     def populate_layers(self, *args):
         """Met à jour les listes de couches disponibles dans QGIS.
         Stocke l'ID de la couche comme userData pour éviter les collisions de noms."""
-        combos_raster = [self.comboDEM, self.comboDEM2, self.comboProspectDEM, self.comboDolinesDEM]
+        combos_raster = [self.comboDEM, self.comboDEM2, self.comboProspectDEM, self.comboDolinesDEM,
+                         self.comboTaPlanLayer, self.comboTaCoupeLayer]
         combos_vector = [self.comboCave, self.comboProfileLayer, self.comboProjEmprise]
+        combos_lines  = [self.comboTaPlanLine, self.comboTaCoupeLine]   # lignes + choix par défaut
+        combos_points = [self.comboTaRefLayer]                          # points seulement
 
         # Mémoriser les sélections courantes (par ID)
         def current_id(combo):
             return combo.currentData(Qt.UserRole)
 
-        prev_ids = {c: current_id(c) for c in combos_raster + combos_vector}
+        all_combos = combos_raster + combos_vector + combos_lines + combos_points
+        prev_ids = {c: current_id(c) for c in all_combos}
 
-        for combo in combos_raster + combos_vector:
+        for combo in all_combos:
             combo.blockSignals(True)
             combo.clear()
+        for combo in combos_lines:
+            combo.addItem("— tracé SpeleoTools —", "")
+        for combo in combos_points:
+            combo.addItem("— aucune —", "")
 
         for layer in QgsProject.instance().mapLayers().values():
             if isinstance(layer, QgsRasterLayer):
@@ -110,15 +128,44 @@ class SpeleoToolsDialog(QtWidgets.QDialog, FORM_CLASS):
             elif isinstance(layer, QgsVectorLayer):
                 for combo in combos_vector:
                     combo.addItem(layer.name(), layer.id())
+                if layer.geometryType() == QgsWkbTypes.LineGeometry:
+                    for combo in combos_lines:
+                        combo.addItem(layer.name(), layer.id())
+                if layer.geometryType() == QgsWkbTypes.PointGeometry:
+                    for combo in combos_points:
+                        combo.addItem(layer.name(), layer.id())
 
         # Restaurer les sélections précédentes
-        for combo in combos_raster + combos_vector:
+        for combo in all_combos:
             prev = prev_ids.get(combo)
             if prev:
                 idx = combo.findData(prev, Qt.UserRole)
                 if idx >= 0:
                     combo.setCurrentIndex(idx)
             combo.blockSignals(False)
+
+    def disconnect_project_signals(self):
+        """Débranche les signaux du projet (appelé au déchargement du plugin :
+        sans cela, un dialogue détruit continue d'être appelé)."""
+        if not getattr(self, "_signals_connected", False):
+            return
+        for signal in (QgsProject.instance().layerWasAdded,
+                       QgsProject.instance().layersWillBeRemoved):
+            try:
+                signal.disconnect(self.populate_layers)
+            except (TypeError, RuntimeError):
+                pass
+        self._signals_connected = False
+
+    def closeEvent(self, event):
+        # l'outil de clic éventuellement actif ne doit pas survivre à la fenêtre
+        try:
+            tool = self.iface.mapCanvas().mapTool()
+            if isinstance(tool, PointCollectorTool):
+                self.iface.mapCanvas().unsetMapTool(tool)
+        except Exception:
+            pass
+        super(SpeleoToolsDialog, self).closeEvent(event)
 
     def get_layer_by_name(self, name):
         """Retourne une couche par son nom (premier résultat)."""
@@ -132,6 +179,8 @@ class SpeleoToolsDialog(QtWidgets.QDialog, FORM_CLASS):
             layer = QgsProject.instance().mapLayer(layer_id)
             if layer:
                 return layer
+        if layer_id == "":
+            return None          # entrée « par défaut » explicite
         # Fallback par nom
         return self.get_layer_by_name(combo.currentText())
 
@@ -337,15 +386,14 @@ class SpeleoToolsDialog(QtWidgets.QDialog, FORM_CLASS):
                                    QgsCoordinateReferenceSystem,
                                    QgsVectorFileWriter, QgsProject,
                                    QgsWkbTypes)
-            from PyQt5.QtCore import QVariant
 
             # CRS vide (non géographique) pour un profil X/Y
             no_crs = QgsCoordinateReferenceSystem()
 
             fields = QgsFields()
-            fields.append(QgsField("X_dist_m",  QVariant.Double))
-            fields.append(QgsField("Y_alt_m",   QVariant.Double))
-            fields.append(QgsField("pt_index",  QVariant.Int))
+            fields.append(_field("X_dist_m",  TYPE_DOUBLE))
+            fields.append(_field("Y_alt_m",   TYPE_DOUBLE))
+            fields.append(_field("pt_index",  TYPE_INT))
 
             mem_layer = QgsVectorLayer(
                 "Point?crs=", name + "_profil", "memory")
@@ -435,7 +483,6 @@ class SpeleoToolsDialog(QtWidgets.QDialog, FORM_CLASS):
                                    QgsFeature, QgsGeometry, QgsFields, QgsField,
                                    QgsVectorFileWriter, QgsProject,
                                    QgsCoordinateReferenceSystem)
-            from PyQt5.QtCore import QVariant
 
             # Reprojeter l'emprise dans le CRS du MNT
             emprise_repr = self._reproject_to_dem_crs(emprise_layer, dem_layer)
@@ -484,9 +531,9 @@ class SpeleoToolsDialog(QtWidgets.QDialog, FORM_CLASS):
             if save_line:
                 try:
                     fields = QgsFields()
-                    fields.append(QgsField("alpha_deg",   QVariant.Double))
-                    fields.append(QgsField("cut_az_deg",  QVariant.Double))
-                    fields.append(QgsField("longueur_m",  QVariant.Double))
+                    fields.append(_field("alpha_deg",   TYPE_DOUBLE))
+                    fields.append(_field("cut_az_deg",  TYPE_DOUBLE))
+                    fields.append(_field("longueur_m",  TYPE_DOUBLE))
 
                     mem_line = QgsVectorLayer(
                         "LineString?crs=" + dem_crs.authid(),
@@ -914,6 +961,12 @@ class SpeleoToolsDialog(QtWidgets.QDialog, FORM_CLASS):
             QtWidgets.QMessageBox.warning(self, "Erreur", f"Couche {dem_name} introuvable.")
             return outputs
         dem_layer = self.get_layer_by_combo(self.comboDolinesDEM) or layers[0]
+
+        if fill_sinks_algorithm() is None:
+            QtWidgets.QMessageBox.critical(self, "Dolines", FILL_SINKS_MISSING)
+            self.textLogDolines.append(FILL_SINKS_MISSING)
+            return outputs
+
         step = 0
         try:
             # --- 1. remplissage des sinks ---
@@ -1156,14 +1209,96 @@ class SpeleoToolsDialog(QtWidgets.QDialog, FORM_CLASS):
             self._tlog(f"   ⚠ fixgeometries échoué ({e}) — SHP original utilisé")
         return shp_path
 
-    @requires("geopandas", "pandas")
+    # ── Outils Processing natifs (plus besoin de geopandas/pandas) ────
+    @staticmethod
+    def _therion_expr_out(layer):
+        """Expression des lignes/aires qui ne doivent PAS être découpées
+        sur l'outline (centerlines, écoulements, étiquettes, _CLIP = off)."""
+        names = [f.name() for f in layer.fields()]
+        parts = []
+        if "_TYPE" in names:
+            parts.append(""""_TYPE" IN ('centerline', 'water_flow', 'label')""")
+        if "_CLIP" in names:
+            parts.append(""""_CLIP" = 'off'""")
+        return " OR ".join(parts) if parts else None
+
+    def _run(self, alg, params):
+        res = processing.run(alg, params)
+        return res.get("OUTPUT")
+
+    def _therion_clip_on_outline(self, layer, outline, label):
+        """Découpe les entités sur l'outline de leur propre scrap.
+        Remplace l'overlay GeoPandas par native:intersection + filtre."""
+        try:
+            inter = self._run("native:intersection", {
+                "INPUT": layer, "OVERLAY": outline,
+                "INPUT_FIELDS": [], "OVERLAY_FIELDS": [],
+                "OVERLAY_FIELDS_PREFIX": "ol_", "OUTPUT": "TEMPORARY_OUTPUT"})
+            names = [f.name() for f in inter.fields()]
+            if "_SCRAP_ID" in names and "ol__ID" in names:
+                inter = self._run("native:extractbyexpression", {
+                    "INPUT": inter, "EXPRESSION": '"_SCRAP_ID" = "ol__ID"',
+                    "OUTPUT": "TEMPORARY_OUTPUT"})
+            drop = [n for n in [f.name() for f in inter.fields()] if n.startswith("ol_")]
+            if drop:
+                inter = self._run("native:deletecolumn", {
+                    "INPUT": inter, "COLUMN": drop, "OUTPUT": "TEMPORARY_OUTPUT"})
+            return inter
+        except Exception as e:
+            self._tlog(f"   ⚠ Découpe {label} impossible ({e}) — entités brutes conservées")
+            return layer
+
+    def _therion_add_alt_fields(self, layer):
+        """Ajoute _ALT, _EASTING, _NORTHING depuis la géométrie (remplace
+        les lambda GeoPandas)."""
+        out = QgsVectorLayer(
+            f"{QgsWkbTypes.displayString(layer.wkbType())}?crs={layer.crs().authid()}",
+            layer.name(), "memory")
+        dp = out.dataProvider()
+        dp.addAttributes(list(layer.fields()) +
+                         [_field("_ALT", TYPE_STRING, 16),
+                          _field("_EASTING", TYPE_DOUBLE),
+                          _field("_NORTHING", TYPE_DOUBLE)])
+        out.updateFields()
+        feats = []
+        for f in layer.getFeatures():
+            g = f.geometry()
+            if g is None or g.isEmpty():
+                continue
+            v = next(g.vertices())
+            nf = QgsFeature(out.fields())
+            nf.setGeometry(g)
+            attrs = list(f.attributes())
+            z = v.z() if v.is3D() else float("nan")
+            attrs += ["" if (z != z) else str(int(round(z))), v.x(), v.y()]
+            nf.setAttributes(attrs)
+            feats.append(nf)
+        dp.addFeatures(feats)
+        out.updateExtents()
+        return out
+
+    def _therion_save(self, layer, path, layername=None):
+        """Écrit une couche en GeoPackage (écrase le fichier existant)."""
+        opts = QgsVectorFileWriter.SaveVectorOptions()
+        opts.driverName = "GPKG"
+        opts.fileEncoding = "UTF-8"
+        opts.layerName = layername or os.path.splitext(os.path.basename(path))[0]
+        opts.actionOnExistingFile = QgsVectorFileWriter.CreateOrOverwriteFile
+        res = QgsVectorFileWriter.writeAsVectorFormatV3(
+            layer, path, QgsProject.instance().transformContext(), opts)
+        if res[0] != QgsVectorFileWriter.NoError:
+            raise IOError(f"Écriture {path} : {res[1]}")
+        return path
+
     def run_therion_import(self):
-        """Import complet des sorties Therion :
-        1. Réparation géométries
-        2. Découpe lignes/aires sur outline
-        3. Ajout altitudes aux points
-        4. Conversion SHP → GPKG
-        5. Import QGIS dans un groupe avec styles QML
+        """Import complet des sorties Therion (Shapefile → GeoPackage) :
+        1. Réparation des géométries
+        2. Découpe des lignes/aires sur l'outline de leur scrap
+        3. Ajout des altitudes aux points et stations
+        4. Conversion en GPKG
+        5. Import dans QGIS, groupé et stylé
+
+        N'utilise que QGIS et GDAL : ni geopandas ni pandas ne sont requis.
         """
         shp_path = self.editTherionShpPath.text().strip()
         if not shp_path or not os.path.isdir(shp_path):
@@ -1210,170 +1345,98 @@ class SpeleoToolsDialog(QtWidgets.QDialog, FORM_CLASS):
                     f"Fichier obligatoire absent : {shp_path + req}")
                 return
 
-        try:
-            import geopandas as gpd
-            import pandas as pd
-        except ImportError:
-            QtWidgets.QMessageBox.critical(
-                self, "Dépendance manquante",
-                "geopandas et pandas sont requis.\n"
-                "pip install geopandas pandas  (dans l'interpréteur Python de QGIS)")
-            return
-
-        # ── 1 : Outline ───────────────────────────────────────────────────
-        self._tlog("1/6 Lecture de l'outline…")
-        self.progressTherion.setValue(5)
-        try:
-            outline_src = shp_path + 'outline2d.shp'
+        def _open(name):
+            """Charge un SHP Therion et répare ses géométries si demandé."""
+            path = shp_path + name + '.shp'
+            if not os.path.isfile(path):
+                return None
+            lyr = QgsVectorLayer(path, name, "ogr")
+            if not lyr.isValid():
+                self._tlog(f"   ⚠ {name}.shp illisible")
+                return None
             if repair_geom:
-                outline_src = self._fix_shp(outline_src)
-            # Lire depuis la couche fixée (QgsVectorLayer ou chemin)
-            if isinstance(outline_src, QgsVectorLayer):
-                tmp_outline = os.path.join(outputs_path, '_tmp_outline.gpkg')
-                outline_src.selectAll()
-                processing.run("native:savefeatures",
-                    {'INPUT': outline_src, 'OUTPUT': tmp_outline})
-                outline_src = tmp_outline
-            outlines = gpd.read_file(outline_src)
-            outlines = outlines[outlines.geometry.notnull() & ~outlines.geometry.is_empty]
-            self._tlog(f"   outline2d : {len(outlines)} entité(s)")
-        except Exception as e:
-            QtWidgets.QMessageBox.critical(self, "Erreur outline", str(e))
-            return
+                fixed = self._fix_shp(path)
+                if isinstance(fixed, QgsVectorLayer) and fixed.isValid():
+                    return fixed
+            return lyr
 
-        total_steps = 6
         gpkg_map = {}
+        lines_gpkg = areas_gpkg = None
 
-        # ── 2 : Lignes ────────────────────────────────────────────────────
-        self._tlog("2/6 Lignes (lines2d)…")
-        self.progressTherion.setValue(15)
-        lines_gpkg = None
         try:
-            lines_src = shp_path + 'lines2d.shp'
-            if repair_geom:
-                lines_src = self._fix_shp(lines_src)
-            if isinstance(lines_src, QgsVectorLayer):
-                tmp_lines = os.path.join(outputs_path, '_tmp_lines.gpkg')
-                processing.run("native:savefeatures",
-                    {'INPUT': lines_src, 'OUTPUT': tmp_lines})
-                lines_src = tmp_lines
-            lines = gpd.read_file(lines_src)
-            lines = lines[lines.geometry.notnull() & ~lines.geometry.is_empty]
+            # ── 1 : Outline ───────────────────────────────────────────
+            self._tlog("1/6 Lecture de l'outline…")
+            self.progressTherion.setValue(5)
+            outline = _open('outline2d')
+            if outline is None:
+                raise IOError("outline2d.shp illisible.")
+            self._tlog(f"   outline2d : {outline.featureCount()} entité(s)")
 
-            linesOUT = pd.concat([
-                lines[lines['_TYPE'] == 'centerline'],
-                lines[lines['_TYPE'] == 'water_flow'],
-                lines[lines['_TYPE'] == 'label'],
-                lines[lines['_CLIP'] == 'off'],
-            ], ignore_index=True)
+            # ── 2 : Lignes ────────────────────────────────────────────
+            self._tlog("2/6 Lignes (lines2d)…")
+            self.progressTherion.setValue(15)
+            lines = _open('lines2d')
+            if lines is not None:
+                expr_out = self._therion_expr_out(lines)
+                parts = []
+                if expr_out:
+                    lines_out = self._run("native:extractbyexpression", {
+                        "INPUT": lines, "EXPRESSION": expr_out, "OUTPUT": "TEMPORARY_OUTPUT"})
+                    lines_in = self._run("native:extractbyexpression", {
+                        "INPUT": lines, "EXPRESSION": f"NOT ({expr_out})",
+                        "OUTPUT": "TEMPORARY_OUTPUT"})
+                    parts.append(lines_out)
+                else:
+                    lines_in = lines
+                parts.append(self._therion_clip_on_outline(lines_in, outline, "lignes"))
+                merged = self._run("native:mergevectorlayers", {
+                    "LAYERS": parts, "CRS": lines.crs(), "OUTPUT": "TEMPORARY_OUTPUT"})
+                lines_gpkg = self._therion_save(merged, outputs_path + 'lines2dMasked.gpkg',
+                                                'lines2dMasked')
+                self._tlog(f"   ✔ lines2dMasked.gpkg : {merged.featureCount()} entité(s)")
 
-            linesIN = lines[
-                (lines['_CLIP'] != 'off') &
-                (~lines['_TYPE'].isin(['centerline', 'water_flow', 'label']))
-            ]
+            # ── 3 : Aires ─────────────────────────────────────────────
+            self._tlog("3/6 Aires (areas2d)…")
+            self.progressTherion.setValue(30)
+            areas = _open('areas2d')
+            if areas is None:
+                self._tlog("   Pas d'areas2d.shp — étape ignorée.")
+            else:
+                clipped = self._therion_clip_on_outline(areas, outline, "aires")
+                areas_gpkg = self._therion_save(clipped, outputs_path + 'areas2dMasked.gpkg',
+                                                'areas2dMasked')
+                self._tlog(f"   ✔ areas2dMasked.gpkg : {clipped.featureCount()} entité(s)")
 
-            try:
-                linesIN = linesIN.overlay(outlines, how='intersection', keep_geom_type=True)
-                if {'_SCRAP_ID', '_ID'}.issubset(linesIN.columns):
-                    linesIN = linesIN[linesIN['_SCRAP_ID'] == linesIN['_ID']]
-            except Exception as e_ov:
-                self._tlog(f"   ⚠ Intersection lignes : {e_ov} — lignes brutes conservées")
-
-            linesTOT = pd.concat([linesOUT, linesIN], ignore_index=True)
-            lines_gpkg = outputs_path + 'lines2dMasked.gpkg'
-            linesTOT.to_file(lines_gpkg, driver='GPKG')
-            self._tlog(f"   ✔ lines2dMasked.gpkg : {len(linesTOT)} entité(s)")
-        except Exception as e:
-            self._tlog(f"   ❌ Lignes : {e}")
-
-        # ── 3 : Aires ─────────────────────────────────────────────────────
-        self._tlog("3/6 Aires (areas2d)…")
-        self.progressTherion.setValue(30)
-        areas_gpkg = None
-        if os.path.isfile(shp_path + 'areas2d.shp'):
-            try:
-                areas_src = shp_path + 'areas2d.shp'
-                if repair_geom:
-                    areas_src = self._fix_shp(areas_src)
-                if isinstance(areas_src, QgsVectorLayer):
-                    tmp_areas = os.path.join(outputs_path, '_tmp_areas.gpkg')
-                    processing.run("native:savefeatures",
-                        {'INPUT': areas_src, 'OUTPUT': tmp_areas})
-                    areas_src = tmp_areas
-                areas = gpd.read_file(areas_src)
-                areas = areas[areas.geometry.notnull() & ~areas.geometry.is_empty]
-                try:
-                    areasIN = areas.overlay(outlines, how='intersection')
-                    if {'_SCRAP_ID', '_ID'}.issubset(areasIN.columns):
-                        areasIN = areasIN[areasIN['_SCRAP_ID'] == areasIN['_ID']]
-                except Exception as e_ov:
-                    self._tlog(f"   ⚠ Intersection aires : {e_ov} — aires brutes conservées")
-                    areasIN = areas
-                areas_gpkg = outputs_path + 'areas2dMasked.gpkg'
-                areasIN.to_file(areas_gpkg, driver='GPKG')
-                self._tlog(f"   ✔ areas2dMasked.gpkg : {len(areasIN)} entité(s)")
-            except Exception as e:
-                self._tlog(f"   ⚠ Aires ignorées : {e}")
-        else:
-            self._tlog("   Pas d'areas2d.shp — étape ignorée.")
-
-        # ── 4 : Points + altitudes ────────────────────────────────────────
-        self._tlog("4/6 Points et stations (ajout altitude)…")
-        self.progressTherion.setValue(50)
-        for fname in ['points2d', 'stations3d']:
-            shp_file = shp_path + fname + '.shp'
-            if not os.path.isfile(shp_file):
-                self._tlog(f"   {fname}.shp absent — ignoré.")
-                continue
-            try:
-                pts_src = shp_file
-                if repair_geom:
-                    pts_src = self._fix_shp(pts_src)
-                if isinstance(pts_src, QgsVectorLayer):
-                    tmp_pts = os.path.join(outputs_path, f'_tmp_{fname}.gpkg')
-                    processing.run("native:savefeatures",
-                        {'INPUT': pts_src, 'OUTPUT': tmp_pts})
-                    pts_src = tmp_pts
-                gdf = gpd.read_file(pts_src)
-                gdf = gdf[gdf.geometry.notnull() & ~gdf.geometry.is_empty]
+            # ── 4 : Points et stations (altitudes) ────────────────────
+            self._tlog("4/6 Points et stations (ajout altitude)…")
+            self.progressTherion.setValue(50)
+            for fname in ['points2d', 'stations3d']:
+                lyr = _open(fname)
+                if lyr is None:
+                    self._tlog(f"   {fname}.shp absent — ignoré.")
+                    continue
                 if add_alt:
-                    gdf['_ALT']      = gdf.geometry.apply(
-                        lambda g: str(round(g.z)) if (g is not None and g.has_z) else '')
-                    gdf['_EASTING']  = gdf.geometry.apply(
-                        lambda g: g.x if g is not None else None)
-                    gdf['_NORTHING'] = gdf.geometry.apply(
-                        lambda g: g.y if g is not None else None)
-                out_gpkg = outputs_path + fname + 'Alt.gpkg'
-                gdf.to_file(out_gpkg, driver='GPKG')
+                    lyr = self._therion_add_alt_fields(lyr)
+                out_gpkg = self._therion_save(lyr, outputs_path + fname + 'Alt.gpkg',
+                                              fname + 'Alt')
                 gpkg_map[fname] = out_gpkg
-                self._tlog(f"   ✔ {fname}Alt.gpkg : {len(gdf)} entité(s)")
-            except Exception as e:
-                self._tlog(f"   ⚠ {fname} : {e}")
+                self._tlog(f"   ✔ {fname}Alt.gpkg : {lyr.featureCount()} entité(s)")
 
-        # ── 5 : shots3d + outline2d + walls3d ────────────────────────────
-        self._tlog("5/6 Conversion shots3d, outline, walls3d…")
-        self.progressTherion.setValue(70)
-        for fname in ['shots3d', 'outline2d']:
-            shp_file = shp_path + fname + '.shp'
-            if not os.path.isfile(shp_file):
-                continue
-            try:
-                vec_src = shp_file
-                if repair_geom:
-                    vec_src = self._fix_shp(vec_src)
-                if isinstance(vec_src, QgsVectorLayer):
-                    tmp_vec = os.path.join(outputs_path, f'_tmp_{fname}.gpkg')
-                    processing.run("native:savefeatures",
-                        {'INPUT': vec_src, 'OUTPUT': tmp_vec})
-                    vec_src = tmp_vec
-                gdf = gpd.read_file(vec_src)
-                gdf = gdf[gdf.geometry.notnull() & ~gdf.geometry.is_empty]
-                out_gpkg = outputs_path + fname + '.gpkg'
-                gdf.to_file(out_gpkg, driver='GPKG')
+            # ── 5 : shots3d + outline2d + walls3d ─────────────────────
+            self._tlog("5/6 Conversion shots3d, outline, walls3d…")
+            self.progressTherion.setValue(70)
+            for fname in ['shots3d', 'outline2d']:
+                lyr = _open(fname)
+                if lyr is None:
+                    continue
+                out_gpkg = self._therion_save(lyr, outputs_path + fname + '.gpkg', fname)
                 gpkg_map[fname] = out_gpkg
-                self._tlog(f"   ✔ {fname}.gpkg : {len(gdf)} entité(s)")
-            except Exception as e:
-                self._tlog(f"   ⚠ {fname} : {e}")
+                self._tlog(f"   ✔ {fname}.gpkg : {lyr.featureCount()} entité(s)")
+
+        except Exception as e:
+            self._tlog(f"   ❌ {e}")
+            QtWidgets.QMessageBox.critical(self, "Import Therion", str(e))
+            return
 
         # walls3d : copie SHP (format maillage 3D non supporté en GPKG)
         walls_dest = None
@@ -1387,7 +1450,7 @@ class SpeleoToolsDialog(QtWidgets.QDialog, FORM_CLASS):
             gpkg_map['walls3d'] = walls_dest
             self._tlog("   ✔ walls3d.shp copié (maillage 3D → SHP conservé)")
 
-        # ── 6 : Import QGIS ───────────────────────────────────────────────
+        # ── 6 : Import QGIS ───────────────────────────────────────────
         self._tlog("6/6 Import dans QGIS avec styles…")
         self.progressTherion.setValue(85)
 
@@ -1419,28 +1482,17 @@ class SpeleoToolsDialog(QtWidgets.QDialog, FORM_CLASS):
             (subgrp or root).addLayer(lyr)
             return lyr
 
-        # ── Ordre d'affichage 2D ─────────────────────────────────────────
-        # Ordre visuel (haut → bas dans le panneau) : Points · Lignes · Aires · Outline
-        # QGIS place chaque couche ajoutée EN HAUT du groupe
-        # → on ajoute dans l'ordre INVERSE : Outline, Aires, Lignes, Points
-
-        # Outline — fond, tout en bas
+        # Ordre visuel (haut → bas) : Points · Lignes · Aires · Outline
+        # QGIS place chaque couche ajoutée en haut du groupe : on ajoute à l'envers
         _load(gpkg_map.get('outline2d', outputs_path + 'outline2d.gpkg'),
               "Outline 2D", grp2d, styles.get('outline2d'))
-
-        # Aires — au-dessus de l'outline
         if areas_gpkg:
             _load(areas_gpkg, "Aires 2D", grp2d, styles['areas2d'])
-
-        # Lignes — au-dessus des aires
         if lines_gpkg:
             _load(lines_gpkg, "Lignes 2D", grp2d, styles['lines2d'])
-
-        # Points — tout en haut du groupe 2D
         _load(gpkg_map.get('points2d', outputs_path + 'points2dAlt.gpkg'),
               "Points 2D", grp2d, styles['points2d'])
 
-        # ── 3D (Parois en bas, Cheminements, Stations en haut) ───────────
         if walls_dest:
             _load(walls_dest, "Parois 3D", grp3d, styles['walls3d'])
         _load(gpkg_map.get('shots3d', outputs_path + 'shots3d.gpkg'),
@@ -1451,23 +1503,10 @@ class SpeleoToolsDialog(QtWidgets.QDialog, FORM_CLASS):
         self.progressTherion.setValue(100)
         self._tlog("✅ Import Therion terminé.")
 
-        # Nettoyage des fichiers temporaires intermédiaires
-        for tmp_name in ['_tmp_outline.gpkg', '_tmp_lines.gpkg', '_tmp_areas.gpkg',
-                          '_tmp_points2d.gpkg', '_tmp_stations3d.gpkg',
-                          '_tmp_shots3d.gpkg', '_tmp_outline2d.gpkg']:
-            tmp_path = os.path.join(outputs_path, tmp_name)
-            if os.path.isfile(tmp_path):
-                try:
-                    os.remove(tmp_path)
-                except Exception:
-                    pass
-
         QtWidgets.QMessageBox.information(
             self, "Import Therion terminé",
             f"Couches importées dans le groupe « {group_name} ».\n"
             f"GPKG dans : {outputs_path}")
-
-
 # -------------------------------------------------
 # Classe Plugin QGIS standard
 # -------------------------------------------------
@@ -1477,13 +1516,21 @@ class SpeleoTools:
         self.plugin_dir = os.path.dirname(__file__)
         self.dialog = None
         self.action = None
+        self.provider = None
 
     def initGui(self):
         """Ajoute le plugin dans le menu et toolbar QGIS"""
         from qgis.PyQt.QtWidgets import QAction
         from qgis.PyQt.QtGui import QIcon
 
-        self.action = QAction(QIcon(), "SpeleoTools", self.iface.mainWindow())
+        # Fournisseur Processing : les traitements deviennent utilisables en lot,
+        # dans les modèles et en ligne de commande, avec annulation.
+        self.provider = SpeleoToolsProvider()
+        QgsApplication.processingRegistry().addProvider(self.provider)
+
+        icon_path = os.path.join(self.plugin_dir, "icon.png")
+        icon = QIcon(icon_path) if os.path.isfile(icon_path) else QIcon()
+        self.action = QAction(icon, "SpeleoTools", self.iface.mainWindow())
         self.action.triggered.connect(self.run)
 
         # Action secondaire : vérifier / réinstaller les dépendances
@@ -1501,7 +1548,16 @@ class SpeleoTools:
         self.iface.addToolBarIcon(self.action)
 
     def unload(self):
-        """Supprime le plugin de QGIS"""
+        """Supprime le plugin de QGIS (menus, barre d'outils, fournisseur
+        Processing, fenêtre et signaux du projet)."""
+        if self.dialog is not None:
+            self.dialog.disconnect_project_signals()
+            self.dialog.close()
+            self.dialog.deleteLater()
+            self.dialog = None
+        if getattr(self, "provider", None) is not None:
+            QgsApplication.processingRegistry().removeProvider(self.provider)
+            self.provider = None
         if self.action:
             self.iface.removePluginMenu("&SpeleoTools", self.action)
             self.iface.removeToolBarIcon(self.action)
@@ -1529,341 +1585,7 @@ class SpeleoTools:
     def run(self):
         """Ouvre la fenêtre du plugin"""
         if not self.dialog:
-            self.dialog = SpeleoToolsDialog(self.iface.mainWindow())
+            self.dialog = SpeleoToolsDialog(self.iface.mainWindow(), iface=self.iface)
         self.dialog.show()
         self.dialog.raise_()
-        self.dialog.activateWindow()    # ======================================================================
-    # --- ONGLET 3 : PROFILS ---
-
-    def _plog(self, msg):
-        self.textLogProfile.append(msg)
-        QtWidgets.QApplication.processEvents()
-
-    def _toggle_alpha_source(self):
-        from_file = self.radioAngleThconfig.isChecked()
-        self.editThconfigPath.setEnabled(from_file)
-        self.btnBrowseThconfig.setEnabled(from_file)
-        self.btnReadThconfig.setEnabled(from_file)
-        self.spinAlpha.setEnabled(not from_file)
-
-    def _browse_thconfig(self):
-        f, _ = QtWidgets.QFileDialog.getOpenFileName(
-            self, "Choisir un fichier .thconfig",
-            os.path.expanduser("~"), "Therion config (*.thconfig *.th);;Tous (*)")
-        if f:
-            self.editThconfigPath.setText(f)
-
-    def _read_alpha_from_thconfig(self):
-        import re
-        path = self.editThconfigPath.text().strip()
-        if not path or not os.path.isfile(path):
-            QtWidgets.QMessageBox.warning(self, "Fichier introuvable",
-                "Selectionnez d'abord un fichier .thconfig valide.")
-            return
-        try:
-            with open(path, 'r', encoding='utf-8', errors='replace') as f:
-                content = f.read()
-            match = re.search(r'-projection\s+\[\s*elevation\s+([\d.]+)\s*\]', content)
-            if match:
-                alpha = float(match.group(1))
-                self.spinAlpha.setValue(alpha)
-                self._plog("alpha = " + str(alpha) + " deg lu depuis " + os.path.basename(path))
-                self.radioAngleManual.setChecked(True)
-            else:
-                QtWidgets.QMessageBox.warning(self, "Angle introuvable",
-                    "Aucune ligne '-projection [elevation XX]' trouvee dans le fichier.")
-        except Exception as e:
-            QtWidgets.QMessageBox.critical(self, "Erreur lecture", str(e))
-
-    def _profile_output_dir(self):
-        d = self.editProfileOutputDir.text().strip() or tempfile.gettempdir()
-        os.makedirs(d, exist_ok=True)
-        return d
-
-    def _export_profile_csv_png(self, distances, elevations, name, out_dir,
-                                  offset_x=0.0, offset_y=0.0):
-        import math, csv as _csv
-        xs = [d + offset_x for d in distances]
-        ys = [e + offset_y if (e is not None and not math.isnan(e)) else float('nan')
-              for e in elevations]
-
-        csv_path = os.path.join(out_dir, name + ".csv")
-        with open(csv_path, 'w', newline='', encoding='utf-8') as csvfile:
-            w = _csv.writer(csvfile)
-            w.writerow(["X_distance_m", "Y_altitude_m"])
-            for x, y in zip(xs, ys):
-                w.writerow([round(x, 3), "" if math.isnan(y) else round(y, 3)])
-        self._plog("CSV : " + csv_path)
-
-        png_path = None
-        try:
-            import matplotlib.pyplot as plt
-            px = [x for x, y in zip(xs, ys) if not math.isnan(y)]
-            py = [y for y in ys if not math.isnan(y)]
-            if px:
-                fig, ax = plt.subplots(figsize=(14, 5))
-                ax.plot(px, py, '-b', linewidth=1.2)
-                ax.fill_between(px, py, min(py), alpha=0.12, color='steelblue')
-                ax.set_title(name, fontsize=12)
-                ax.set_xlabel("Distance (m)")
-                ax.set_ylabel("Altitude (m)")
-                ax.grid(True, linestyle='--', alpha=0.4)
-                fig.tight_layout()
-                png_path = os.path.join(out_dir, name + ".png")
-                fig.savefig(png_path, dpi=200, bbox_inches='tight')
-                plt.close(fig)
-                self._plog("PNG : " + png_path)
-        except ImportError:
-            self._plog("[INFO] matplotlib absent - PNG ignore.")
-        return csv_path, png_path
-
-    # ----------------------------------------------------------------
-    # Cas 1 : Profil projete
-    # ----------------------------------------------------------------
-    def run_projected_profile(self):
-        import math
-        dem_layer     = self.get_layer_by_combo(self.comboDEM2)
-        emprise_layer = self.get_layer_by_combo(self.comboProjEmprise)
-        if not dem_layer or not dem_layer.isValid():
-            QtWidgets.QMessageBox.warning(self, "Erreur", "Selectionnez un MNT valide.")
-            return
-        if not emprise_layer or not emprise_layer.isValid():
-            QtWidgets.QMessageBox.warning(self, "Erreur", "Selectionnez une couche d'emprise valide.")
-            return
-
-        alpha      = float(self.spinAlpha.value())
-        margin_pct = float(self.spinProfileMargin.value()) / 100.0
-        offset_x   = float(self.spinProjOffsetX.value())
-        offset_y   = float(self.spinProjOffsetY.value())
-        out_dir    = self._profile_output_dir()
-
-        self.textLogProfile.clear()
-        self._plog("Profil projete alpha=" + str(alpha) + " deg - emprise : " + emprise_layer.name())
-
-        try:
-            from qgis.core import QgsRectangle, QgsPointXY
-
-            bbox = emprise_layer.extent()
-            w = bbox.width()
-            h = bbox.height()
-            margin = max(w, h) * margin_pct
-            bbox_exp = QgsRectangle(
-                bbox.xMinimum() - margin, bbox.yMinimum() - margin,
-                bbox.xMaximum() + margin, bbox.yMaximum() + margin)
-
-            cx = (bbox_exp.xMinimum() + bbox_exp.xMaximum()) / 2.0
-            cy = (bbox_exp.yMinimum() + bbox_exp.yMaximum()) / 2.0
-            half_diag = math.hypot(bbox_exp.width(), bbox_exp.height()) / 2.0
-            self._plog("Centre : (" + str(round(cx,1)) + ", " + str(round(cy,1)) + ")")
-
-            cut_azimuth = (alpha + 90.0) % 360.0
-            rad = math.radians(cut_azimuth)
-            dx = math.sin(rad)
-            dy = math.cos(rad)
-
-            x0 = cx - dx * half_diag
-            y0 = cy - dy * half_diag
-            x1 = cx + dx * half_diag
-            y1 = cy + dy * half_diag
-            self._plog("Ligne de coupe : (" + str(round(x0,1)) + "," + str(round(y0,1)) +
-                       ") -> (" + str(round(x1,1)) + "," + str(round(y1,1)) + ")")
-
-            dem_res   = (dem_layer.rasterUnitsPerPixelX() + dem_layer.rasterUnitsPerPixelY()) / 2.0
-            line_len  = math.hypot(x1-x0, y1-y0)
-            n_pts     = max(int(line_len / max(dem_res, 0.01)), 2)
-
-            distances  = []
-            elevations = []
-            for i in range(n_pts + 1):
-                t  = i / n_pts
-                px = x0 + t * (x1 - x0)
-                py = y0 + t * (y1 - y0)
-                try:
-                    z = sample_dem_at_point(dem_layer, QgsPointXY(px, py))
-                except Exception:
-                    z = float('nan')
-                distances.append(t * line_len)
-                elevations.append(z if z is not None else float('nan'))
-
-            valid = sum(1 for e in elevations if e is not None and not math.isnan(e))
-            self._plog(str(n_pts+1) + " points, " + str(valid) + " valides.")
-
-            name = ("profil_projete_a" + str(int(alpha)) + "deg_" +
-                    self._safe_name(dem_layer.name()))
-            csv_p, png_p = self._export_profile_csv_png(
-                distances, elevations, name, out_dir, offset_x, offset_y)
-
-            msg = "Profil projete genere.\nCSV : " + csv_p
-            if png_p:
-                msg += "\nPNG : " + png_p
-            QtWidgets.QMessageBox.information(self, "Termine", msg)
-
-        except Exception as e:
-            self._plog("[ERROR] " + str(e))
-            QtWidgets.QMessageBox.critical(self, "Erreur", str(e))
-
-    # ----------------------------------------------------------------
-    # Cas 2 : Profil developpe
-    # ----------------------------------------------------------------
-    def run_developed_profile(self):
-        import math
-        dem_layer     = self.get_layer_by_combo(self.comboDEM2)
-        profile_layer = self.get_layer_by_combo(self.comboProfileLayer)
-        if not dem_layer or not dem_layer.isValid():
-            QtWidgets.QMessageBox.warning(self, "Erreur", "Selectionnez un MNT valide.")
-            return
-        if not profile_layer or not profile_layer.isValid():
-            QtWidgets.QMessageBox.warning(self, "Erreur", "Selectionnez une polyligne valide.")
-            return
-
-        spacing   = float(self.doubleSpinBoxSpacing.value())
-        do_interp = self.checkBoxInterpolate.isChecked()
-        max_gap   = (float(self.doubleSpinBoxMaxGap.value())
-                     if self.checkBoxMaxGap.isChecked() else None)
-        offset_x  = float(self.spinDevOffsetX.value())
-        offset_y  = float(self.spinDevOffsetY.value())
-        out_dir   = self._profile_output_dir()
-
-        self.textLogProfile.clear()
-        self._plog("Profil developpe - " + profile_layer.name() + " / " + dem_layer.name())
-
-        try:
-            from qgis.core import QgsPointXY, QgsCoordinateTransform, QgsProject
-
-            dem_crs    = dem_layer.crs()
-            prof_crs   = profile_layer.crs()
-            need_xform = (prof_crs != dem_crs)
-            xform = (QgsCoordinateTransform(prof_crs, dem_crs, QgsProject.instance())
-                     if need_xform else None)
-
-            distances  = []
-            elevations = []
-            cum_dist   = 0.0
-            prev_xy    = None
-
-            for feat in profile_layer.getFeatures():
-                geom = feat.geometry()
-                if not geom or geom.isEmpty():
-                    continue
-                polylines = (geom.asMultiPolyline() if geom.isMultipart()
-                             else [geom.asPolyline()])
-
-                for poly in polylines:
-                    if len(poly) < 2:
-                        continue
-                    dense_pts = []
-                    for i in range(len(poly) - 1):
-                        try:
-                            ax, ay = poly[i].x(), poly[i].y()
-                            bx, by = poly[i+1].x(), poly[i+1].y()
-                        except Exception:
-                            ax, ay = float(poly[i][0]), float(poly[i][1])
-                            bx, by = float(poly[i+1][0]), float(poly[i+1][1])
-                        seg_len = math.hypot(bx-ax, by-ay)
-                        if seg_len == 0:
-                            continue
-                        n_sub = max(1, int(seg_len / spacing))
-                        for k in range(n_sub):
-                            t = k / n_sub
-                            dense_pts.append((ax + t*(bx-ax), ay + t*(by-ay)))
-                    try:
-                        dense_pts.append((poly[-1].x(), poly[-1].y()))
-                    except Exception:
-                        dense_pts.append((float(poly[-1][0]), float(poly[-1][1])))
-
-                    for px, py in dense_pts:
-                        seg = (math.hypot(px - prev_xy[0], py - prev_xy[1])
-                               if prev_xy else 0.0)
-                        cum_dist += seg
-                        prev_xy   = (px, py)
-
-                        sample_pt = QgsPointXY(px, py)
-                        if xform:
-                            try:
-                                t2 = xform.transform(sample_pt)
-                                sample_pt = QgsPointXY(t2.x(), t2.y())
-                            except Exception:
-                                pass
-                        try:
-                            z = sample_dem_at_point(dem_layer, sample_pt)
-                        except Exception:
-                            z = float('nan')
-
-                        distances.append(cum_dist)
-                        elevations.append(z if z is not None else float('nan'))
-
-            if not distances:
-                QtWidgets.QMessageBox.warning(self, "Erreur",
-                    "Aucun point extrait. Verifiez la couche polyligne.")
-                return
-
-            if do_interp:
-                import numpy as np
-                arr  = np.array(elevations, dtype=float)
-                nans = np.isnan(arr)
-                if nans.any() and not nans.all():
-                    idx      = np.arange(len(arr))
-                    arr_fill = np.interp(idx[nans], idx[~nans], arr[~nans])
-                    if max_gap is not None:
-                        dist_arr = np.array(distances)
-                        for j, ni in enumerate(np.where(nans)[0]):
-                            left  = np.searchsorted(idx[~nans], ni, 'left') - 1
-                            right = left + 1
-                            if left >= 0 and right < len(idx[~nans]):
-                                gap = dist_arr[idx[~nans][right]] - dist_arr[idx[~nans][left]]
-                                if gap > max_gap:
-                                    arr_fill[j] = float('nan')
-                        arr[nans] = arr_fill
-                    else:
-                        arr[nans] = arr_fill
-                elevations = arr.tolist()
-
-            valid = sum(1 for e in elevations if e is not None and not math.isnan(e))
-            self._plog(str(len(distances)) + " points, " + str(valid) + " valides.")
-
-            name = ("profil_dev_" + self._safe_name(profile_layer.name()) +
-                    "_" + self._safe_name(dem_layer.name()))
-            csv_p, png_p = self._export_profile_csv_png(
-                distances, elevations, name, out_dir, offset_x, offset_y)
-
-            msg = "Profil developpe genere.\nCSV : " + csv_p
-            if png_p:
-                msg += "\nPNG : " + png_p
-            QtWidgets.QMessageBox.information(self, "Termine", msg)
-
-        except Exception as e:
-            self._plog("[ERROR] " + str(e))
-            QtWidgets.QMessageBox.critical(self, "Erreur", str(e))
-
-
-# -*- coding: utf-8 -*-
-"""
-SpeleoTools Plugin for QGIS 3
-Auteur : Urruty Benoit
-Description : Interface complète à 4 onglets pour outils spéléo.
-"""
-import csv
-import math
-import tempfile
-import os
-import processing
-from qgis.PyQt import QtWidgets, uic, QtCore
-from qgis.PyQt.QtCore import Qt
-from qgis.core import (
-    QgsProject, QgsRasterLayer, QgsVectorLayer, QgsPoint, QgsPointXY,
-    QgsFeature, QgsFields, QgsField, QgsWkbTypes, QgsGeometry,
-    QgsFeatureSink, QgsDistanceArea, QgsCoordinateTransformContext,
-    QgsFeatureRequest, QgsMessageLog, Qgis, QgsVectorFileWriter,
-    QgsCoordinateTransform
-)
-from PyQt5.QtCore import QVariant
-
-import numpy as np
-import heapq
-
-from .speleo_utils import *
-from .install_dependencies import requires
-
-# Charger l'interface .ui
-FORM_CLASS, _ = uic.loadUiType(os.path.join(os.path.dirname(__file__), 'speleo_dialog.ui'))
-
+        self.dialog.activateWindow()

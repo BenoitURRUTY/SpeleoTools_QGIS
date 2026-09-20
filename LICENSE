@@ -1,0 +1,27 @@
+SpeleoTools — plugin QGIS pour la spéléologie
+Copyright (C) Benoît Urruty
+
+Cette œuvre est mise à disposition selon les termes de la licence
+Creative Commons Attribution - Pas d'Utilisation Commerciale -
+Partage dans les Mêmes Conditions 4.0 International (CC BY-NC-SA 4.0).
+
+Vous êtes autorisé à partager et à adapter ce travail, aux conditions
+suivantes :
+
+  Attribution — créditer l'œuvre, indiquer un lien vers la licence et
+  signaler les modifications effectuées.
+
+  Pas d'Utilisation Commerciale — pas d'usage commercial de cette œuvre.
+
+  Partage dans les Mêmes Conditions — toute œuvre dérivée doit être
+  diffusée sous la même licence.
+
+Texte complet de la licence :
+https://creativecommons.org/licenses/by-nc-sa/4.0/legalcode.fr
+
+Résumé :
+https://creativecommons.org/licenses/by-nc-sa/4.0/deed.fr
+
+L'import Therion s'inspire du travail de Xavier Robert :
+Robert X. (2025), pyThGIS, a Python code to clean the shp Therion output.
+DOI : 10.5281/zenodo.15078040
